@@ -1,0 +1,36 @@
+{
+  "name": "lossless-context-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server that drastically cuts file-read tokens in agent sessions without sacrificing quality. Withholds or diffs only content it can prove the model still has (epoch-bounded by Claude Code compaction); sends full content otherwise.",
+  "type": "module",
+  "bin": {
+    "lossless-context-mcp": "dist/index.js"
+  },
+  "files": ["dist", "hooks", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "bench": "tsx bench/run.ts",
+    "smoke": "node bench/smoke.mjs",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "author": "Kristian Baer / Northtek",
+  "engines": { "node": ">=18" },
+  "keywords": ["mcp", "claude", "tokens", "context", "agent", "lossless", "cost"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "diff": "^7.0.0",
+    "gpt-tokenizer": "^2.8.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.0",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
