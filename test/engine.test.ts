@@ -8,7 +8,7 @@ function harness() {
   const view = new Map<string, string>() // what the model holds (full + diffs + markers)
   const truth = new Map<string, string>() // current file content
   const read = (path: string, forceFull = false) => {
-    const r = engine.read(path, truth.get(path) ?? '', forceFull)
+    const r = engine.read(path, truth.get(path) ?? '', { forceFull })
     view.set(path, applyToModelView(view.get(path), r))
     return r
   }

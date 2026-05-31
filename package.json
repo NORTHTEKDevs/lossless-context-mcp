@@ -1,12 +1,16 @@
 {
   "name": "lossless-context-mcp",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "An MCP server that drastically cuts file-read tokens in agent sessions without sacrificing quality. Withholds or diffs only content it can prove the model still has (epoch-bounded by Claude Code compaction); sends full content otherwise.",
   "type": "module",
   "bin": {
     "lossless-context-mcp": "dist/index.js"
   },
-  "files": ["dist", "hooks", "README.md"],
+  "files": [
+    "dist",
+    "hooks",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
@@ -17,9 +21,29 @@
     "prepublishOnly": "npm run build"
   },
   "author": "Kristian Baer / Northtek",
-  "engines": { "node": ">=18" },
-  "keywords": ["mcp", "claude", "tokens", "context", "agent", "lossless", "cost"],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "claude-code",
+    "tokens",
+    "context",
+    "agent",
+    "lossless",
+    "diff",
+    "cost"
+  ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NORTHTEKDevs/lossless-context-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NORTHTEKDevs/lossless-context-mcp/issues"
+  },
+  "homepage": "https://github.com/NORTHTEKDevs/lossless-context-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "diff": "^7.0.0",

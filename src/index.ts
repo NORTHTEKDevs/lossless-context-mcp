@@ -12,6 +12,7 @@ import { encode } from 'gpt-tokenizer'
 import { LosslessEngine, type ReadResult } from './engine.js'
 import { getEpoch } from './sentinel.js'
 import { outlineOf, renderOutline } from './outline.js'
+import { looksBinary, findSymbol, sliceLines } from './slice.js'
 
 const engine = new LosslessEngine()
 const MAX_BYTES = Number(process.env.LOSSLESS_MAX_BYTES || 2_000_000)
@@ -21,15 +22,15 @@ const stats = { full: 0, diff: 0, unchanged: 0, baselineTokens: 0, sentTokens: 0
 
 const text = (s: string, isError = false) => ({ content: [{ type: 'text' as const, text: s }], isError })
 
-function render(r: ReadResult): string {
-  if (r.kind === 'full') return `[lossless-context] ${r.path} — full content (${r.bytes} bytes):\n${r.content}`
+function render(r: ReadResult, label = ''): string {
+  if (r.kind === 'full') return `[lossless-context] ${r.path}${label} — full content (${r.bytes} bytes):\n${r.content}`
   if (r.kind === 'diff')
     return (
-      `[lossless-context] ${r.path} changed since your last read this context. ` +
+      `[lossless-context] ${r.path}${label} changed since your last read this context. ` +
       `Apply this unified diff to the copy you already have (do NOT re-request the whole file):\n\n${r.patch}`
     )
   return (
-    `[lossless-context] ${r.path} is byte-identical to your last read this context (hash ${r.hash}). ` +
+    `[lossless-context] ${r.path}${label} is byte-identical to your last read this context (hash ${r.hash}). ` +
     `Reuse the content you already have — nothing to add.`
   )
 }
@@ -38,23 +39,29 @@ const server = new McpServer({ name: 'lossless-context', version: '0.1.0' })
 
 server.tool(
   'read_file',
-  'Read a text file with lossless token savings. The FIRST read of a file (or the first ' +
-    'after a context compaction) returns full content. A later read of an UNCHANGED file ' +
-    'returns a short "reuse what you have" marker. A later read of a CHANGED file returns a ' +
-    'unified DIFF to apply to the copy you already have — never the whole file again. All ' +
-    'savings are lossless: it only diffs/withholds content it can prove you still have. ' +
-    'When you receive a diff, apply it mentally to your prior copy; when unchanged, reuse ' +
-    'your copy. Pass force_full:true if you want the whole file regardless.',
+  'Read a text file with lossless token savings. The FIRST read of a file/view (or the ' +
+    'first after a context compaction) returns full content. A later read of an UNCHANGED ' +
+    'view returns a short "reuse what you have" marker. A later read of a CHANGED view ' +
+    'returns a unified DIFF to apply to the copy you already have — never the whole thing ' +
+    'again. Optionally read just one symbol (function/class by name) or a line range instead ' +
+    'of the whole file. All savings are lossless: it only diffs/withholds content it can ' +
+    'prove you still have. When you get a diff, apply it to your prior copy; when unchanged, ' +
+    'reuse your copy. Pass force_full:true for the whole content regardless.',
   {
     path: z.string().describe('Path to the file to read (absolute, or relative to the server cwd).'),
+    symbol: z
+      .string()
+      .optional()
+      .describe('Return only this function/class/type by name (heuristic brace/indent extraction).'),
+    lines: z.string().optional().describe('Return only this 1-based inclusive line range, e.g. "40-90".'),
     force_full: z
       .boolean()
       .optional()
-      .describe('Return the full file content even when a diff or unchanged-marker would suffice.'),
+      .describe('Return full content even when a diff or unchanged-marker would suffice.'),
   },
-  async ({ path, force_full }) => {
+  async ({ path, symbol, lines, force_full }) => {
     engine.setEpoch(getEpoch()) // honor any compaction/session reset signalled by the hooks
-    let content: string
+    let buf: Buffer
     try {
       const st = statSync(path)
       if (st.size > MAX_BYTES)
@@ -63,19 +70,45 @@ server.tool(
             `read it with the native Read tool using offset/limit.`,
           true,
         )
-      content = readFileSync(path, 'utf8')
+      buf = readFileSync(path)
     } catch (e) {
       return text(`[lossless-context] cannot read ${path}: ${(e as Error).message}`, true)
     }
+    if (looksBinary(buf))
+      return text(`[lossless-context] ${path} looks like binary / non-UTF-8 content; use the native Read tool.`, true)
+    const fileContent = buf.toString('utf8')
 
-    const r = engine.read(path, content, force_full === true)
-    const baseT = encode(content).length
+    // Resolve the requested view: a named symbol, an explicit line range, or the whole file.
+    let view = 'full'
+    let viewContent = fileContent
+    let label = ''
+    if (typeof symbol === 'string' && symbol.length > 0) {
+      const s = findSymbol(fileContent, symbol, path)
+      if (!s)
+        return text(
+          `[lossless-context] symbol '${symbol}' not found in ${path}. Call outline(${path}) to see what's there, or read without 'symbol'.`,
+          true,
+        )
+      view = `sym:${symbol}`
+      viewContent = s.text
+      label = ` (symbol ${symbol}, lines ${s.start}-${s.end})`
+    } else if (typeof lines === 'string' && lines.length > 0) {
+      const m = lines.match(/^(\d+)\s*-\s*(\d+)$/)
+      if (!m) return text(`[lossless-context] 'lines' must be "start-end" (e.g. "40-90").`, true)
+      const sl = sliceLines(fileContent, Number(m[1]), Number(m[2]))
+      view = `lines:${sl.start}-${sl.end}`
+      viewContent = sl.text
+      label = ` (lines ${sl.start}-${sl.end})`
+    }
+
+    const r = engine.read(path, viewContent, { forceFull: force_full === true, view })
+    // Honest accounting: baseline = the resolved view's content (what we'd send without
+    // dedup); sent = what we actually sent. This measures ONLY the lossless dedup/diff win.
     const body = r.kind === 'full' ? r.content! : r.kind === 'diff' ? r.patch! : (r.note ?? '')
-    const sentT = encode(body).length
-    stats.baselineTokens += baseT
-    stats.sentTokens += sentT
+    stats.baselineTokens += encode(viewContent).length
+    stats.sentTokens += encode(body).length
     stats[r.kind]++
-    return text(render(r))
+    return text(render(r, label))
   },
 )
 

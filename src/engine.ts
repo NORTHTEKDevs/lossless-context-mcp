@@ -20,6 +20,7 @@ export type ReadKind = 'full' | 'unchanged' | 'diff'
 export interface ReadResult {
   kind: ReadKind
   path: string
+  view: string // dedup view: 'full' | 'sym:<name>' | 'lines:<a>-<b>' — distinct views dedup independently
   epoch: number
   hash: string
   bytes: number // byte length of the CURRENT full file content
@@ -71,8 +72,10 @@ export class LosslessEngine {
   /** Decide what to return for a read of `path` whose current full content is `content`.
    *  Updates the ledger to reflect what the model will hold afterward.
    *  `forceFull` skips dedup/diff and always returns full content (caller escape hatch). */
-  read(path: string, content: string, forceFull = false): ReadResult {
-    const key = normalizeKey(path)
+  read(path: string, content: string, opts: { forceFull?: boolean; view?: string } = {}): ReadResult {
+    const forceFull = opts.forceFull === true
+    const view = opts.view ?? 'full'
+    const key = normalizeKey(path) + '::' + view
     const hash = hashContent(content)
     const bytes = Buffer.byteLength(content, 'utf8')
     const prev = this.ledger.get(key)
@@ -83,6 +86,7 @@ export class LosslessEngine {
         return {
           kind: 'unchanged',
           path,
+          view,
           epoch: this.epoch,
           hash,
           bytes,
@@ -95,6 +99,7 @@ export class LosslessEngine {
       return {
         kind: 'diff',
         path,
+        view,
         epoch: this.epoch,
         hash,
         bytes,
@@ -103,9 +108,9 @@ export class LosslessEngine {
       }
     }
 
-    // First read of this path this epoch (or after compaction) -> full content.
+    // First read of this view this epoch (or after compaction) -> full content.
     this.ledger.set(key, { epoch: this.epoch, content, hash })
-    return { kind: 'full', path, epoch: this.epoch, hash, bytes, content }
+    return { kind: 'full', path, view, epoch: this.epoch, hash, bytes, content }
   }
 }
 
