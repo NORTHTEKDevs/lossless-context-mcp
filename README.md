@@ -4,7 +4,9 @@
 
 An MCP server that **cuts the tokens agents spend re-reading files — without sacrificing quality.**
 
-On a realistic edit-loop coding workload it cuts file-read tokens **~72%**, measured with a real tokenizer, while staying **provably lossless**: across every read, what the model could reconstruct equalled the true file byte-for-byte (0 violations). On a read-once session it saves ~0% — the honest floor. Reproduce both with `npm run bench`.
+On a **synthetic** edit-loop benchmark it cuts file-read tokens **~72%**, measured with a real tokenizer, while staying **provably lossless** (SHA-256 change detection; across every read the model's reconstruction equalled the true file byte-for-byte, 0 violations). On a read-once session it saves ~0% — the honest floor. Reproduce both with `npm run bench`.
+
+> These are **benchmark** numbers on a scripted workload, not production telemetry. A real-session measurement on live Claude Code traces is the next milestone before any headline savings claim.
 
 > Savings come from re-read and edit-loop traffic, which dominates long agentic sessions. First-contact reads of new files are **not** reduced (and shouldn't be).
 
@@ -61,4 +63,4 @@ Then tell Claude to prefer it (in `CLAUDE.md`): *"Prefer the `read_file` tool fr
 
 ## Status
 
-**v1.0.0** — `npm run build` clean, `npm test` green (engine losslessness invariant + symbol/line slicing), benchmark lossless across scenarios, over-the-wire stdio smoke passes. MIT.
+**v1.0.1** — SHA-256 change detection (provably, not probabilistically, lossless), string/comment-aware symbol slicing, bounded-memory ledger, diff/marker self-check fallback, full error-path smoke coverage. `npm run build` clean, `npm test` green (engine losslessness invariant + symbol/line slicing), benchmark lossless across scenarios, over-the-wire stdio smoke passes. MIT.

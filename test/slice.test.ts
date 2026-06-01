@@ -66,6 +66,13 @@ describe('findSymbol (brace family / TS)', () => {
     const s = findSymbol(TS, 'Delta', 'a.ts')!
     expect(s.text).toContain('export type Delta')
   })
+  it('does not truncate at a brace inside a string or comment (M2 fix)', () => {
+    const src = `function f() {\n  const s = "}"  // a } in a comment too\n  return 1\n}\nfunction g() { return 2 }`
+    const s = findSymbol(src, 'f', 'a.ts')!
+    expect(s.text).toContain('return 1')
+    expect(s.text.trim().endsWith('}')).toBe(true)
+    expect(s.text).not.toContain('function g')
+  })
   it('returns null for an unknown symbol', () => {
     expect(findSymbol(TS, 'doesNotExist', 'a.ts')).toBeNull()
   })

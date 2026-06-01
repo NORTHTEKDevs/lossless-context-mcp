@@ -1,6 +1,6 @@
 {
   "name": "lossless-context-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "An MCP server that drastically cuts file-read tokens in agent sessions without sacrificing quality. Withholds or diffs only content it can prove the model still has (epoch-bounded by Claude Code compaction); sends full content otherwise.",
   "type": "module",
   "bin": {

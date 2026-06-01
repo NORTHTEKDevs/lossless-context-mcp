@@ -21,21 +21,24 @@ const MAX_BYTES = Number(process.env.LOSSLESS_MAX_BYTES || 2_000_000)
 const stats = { full: 0, diff: 0, unchanged: 0, baselineTokens: 0, sentTokens: 0 }
 
 const text = (s: string, isError = false) => ({ content: [{ type: 'text' as const, text: s }], isError })
+// Operational logging goes to stderr only (stdout is reserved for JSON-RPC framing).
+const logErr = (m: string) => { try { process.stderr.write(`[lossless-context] ${m}\n`) } catch {} }
 
 function render(r: ReadResult, label = ''): string {
   if (r.kind === 'full') return `[lossless-context] ${r.path}${label} — full content (${r.bytes} bytes):\n${r.content}`
   if (r.kind === 'diff')
     return (
       `[lossless-context] ${r.path}${label} changed since your last read this context. ` +
-      `Apply this unified diff to the copy you already have (do NOT re-request the whole file):\n\n${r.patch}`
+      `Apply this unified diff to the copy you already have. If you no longer have that prior ` +
+      `version (e.g. it was compacted away), call read_file again with force_full:true instead of guessing:\n\n${r.patch}`
     )
   return (
-    `[lossless-context] ${r.path}${label} is byte-identical to your last read this context (hash ${r.hash}). ` +
-    `Reuse the content you already have — nothing to add.`
+    `[lossless-context] ${r.path}${label} is byte-identical to your last read this context (hash ${r.hash.slice(0, 12)}). ` +
+    `Reuse the content you already have. If you no longer have it, call read_file with force_full:true.`
   )
 }
 
-const server = new McpServer({ name: 'lossless-context', version: '0.1.0' })
+const server = new McpServer({ name: 'lossless-context', version: '1.0.1' })
 
 server.tool(
   'read_file',
@@ -72,6 +75,7 @@ server.tool(
         )
       buf = readFileSync(path)
     } catch (e) {
+      logErr(`read_file failed for ${path}: ${(e as Error).message}`)
       return text(`[lossless-context] cannot read ${path}: ${(e as Error).message}`, true)
     }
     if (looksBinary(buf))
