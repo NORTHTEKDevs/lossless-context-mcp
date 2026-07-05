@@ -2,15 +2,39 @@
 
 [![CI](https://github.com/NORTHTEKDevs/lossless-context-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/NORTHTEKDevs/lossless-context-mcp/actions/workflows/ci.yml)
 
-An MCP server that **cuts the tokens agents spend re-reading files — without sacrificing quality.**
+A **context ledger** for agent file reads: provably-lossless dedup of re-reads, per-repo token metering with dollar costs, and **HMAC-signed receipts of exactly which file versions the model was shown**.
 
-On a **synthetic** edit-loop benchmark it cuts file-read tokens **~72%**, measured with a real tokenizer, while staying **provably lossless** (SHA-256 change detection; across every read the model's reconstruction equalled the true file byte-for-byte, 0 violations). On a read-once session it saves ~0% — the honest floor. Reproduce both with `npm run bench`.
+> ## Reality check: as a token saver, on real sessions this saves ~0%
+> Measured over **1,839 real Claude Code transcripts (16,823 `Read` calls, 64 MB)** with the bundled
+> `bench/real-session.ts` harness: **−1.4% with a real tokenizer** (i.e. slightly *worse* than baseline),
+> because only **7–8%** of reads are re-reads and the median session re-reads **0%** of its files. Claude
+> Code's native file-state cache already avoids redundant re-reads, so there is almost nothing left for this
+> to save, and on changed re-reads a unified diff can be larger than the file. **It is not a token-savings
+> product for normal use.** Reproduce: `npx tsx bench/real-session.ts`.
 
-> These are **benchmark** numbers on a scripted workload, not production telemetry. A real-session measurement on live Claude Code traces is the next milestone before any headline savings claim.
+The earlier **~72%** figure is a **synthetic** edit-loop that re-reads the same files dozens of times — a
+ceiling, not a typical workload (see [BENCHMARK.md](./BENCHMARK.md) for the full methodology and range).
+The dedup layer still helps the niche workflows that genuinely re-read files many times in one context —
+and clients without native file-state caching — but it is not the reason this exists.
 
-> Savings come from re-read and edit-loop traffic, which dominates long agentic sessions. First-contact reads of new files are **not** reduced (and shouldn't be).
+## What it is (v1.1): measurement and evidence, not just savings
 
-## Why it doesn't hurt quality
+Token-saving tricks get absorbed by the platforms (the reality check above *is* that story: Claude Code's
+native cache already ate the opportunity). What doesn't get absorbed is vendor-neutral **measurement** and
+**provenance**. v1.1 builds both on the same ledger that makes reads lossless:
+
+1. **Lossless reads** (`read_file`, `read_files`) — full content on first contact; a tiny reuse-marker or a
+   unified diff on re-reads, only when the model provably still holds the base version.
+2. **Context metering** (`context_stats`) — where this session's file-read tokens actually went: totals,
+   per-repo breakdown, heaviest files, and a USD estimate. Counted with a real tokenizer on exactly what
+   was sent. Works identically in any MCP client — Claude Code, Cursor, Cline, custom SDK agents.
+3. **Signed context receipts** (`context_receipt` / `verify_context_receipt`) — an auditable, verifiable
+   answer to *"what did the AI see when it did this?"*: every file/view shown to the model, the SHA-256 of
+   every content version it saw, how each was delivered, token totals — HMAC-SHA256 signed. By default it
+   signs with the same key file as [trust-mcp](https://github.com/NORTHTEKDevs) receipts, so one key
+   verifies a complete evidence chain: *what the agent saw + what it did*.
+
+## Why the read path doesn't hurt quality
 
 Every other "send less" trick (slicing, summarizing, compressing) risks eliding something the model needed. This one is different: **it only ever withholds or diffs content it can prove the model still has.** The proof is bounded by *context epochs*.
 
@@ -30,7 +54,7 @@ npm i -g lossless-context-mcp        # or: npx lossless-context-mcp
 claude mcp add lossless-context --scope user -- lossless-context-mcp
 ```
 
-Wire the epoch hook so savings stay lossless across compactions. In `~/.claude/settings.json`:
+Wire the epoch hook so dedup stays lossless across compactions. In `~/.claude/settings.json`:
 
 ```json
 {
@@ -48,19 +72,26 @@ Then tell Claude to prefer it (in `CLAUDE.md`): *"Prefer the `read_file` tool fr
 | Tool | What it does |
 |------|--------------|
 | `read_file(path, symbol?, lines?, force_full?)` | Lossless read: full / unchanged-marker / diff. Optionally read just one `symbol` (function/class by name) or a `lines:"40-90"` range — each view dedups independently. Refuses binary files. |
+| `read_files(paths[], force_full?)` | Read a working set in one call — each file through the same ledger; per-file errors don't fail the batch. |
 | `outline(path)` | Cheap structural map (declaration lines, bodies elided) to navigate a big file before reading parts of it. |
-| `lossless_stats()` | This session's real token savings (baseline vs sent, % saved), counted with a real tokenizer. |
+| `context_stats()` | Where this session's file-read tokens went: totals, per-repo breakdown, heaviest files, dedup savings, USD estimate (`LOSSLESS_PRICE_PER_MTOK`, default $3/MTok). |
+| `context_receipt(artifact)` | Issue a signed context receipt: every file/view shown, every content hash seen, delivery kinds, token totals. Key: `LOSSLESS_RECEIPT_KEY` or the shared trust key file. |
+| `verify_context_receipt(receipt, signature)` | Timing-safe verification; canonicalized, so JSON field order doesn't matter. |
 
 ## How it's measured
 
-`npm run bench` replays scripted agent workloads (an **edit-loop** ceiling and a **read-once** floor) two ways and counts tokens with `gpt-tokenizer`: **baseline** = the full content on every read vs **lossless** = what this server returns. It also reconstructs the model's view and fails if it ever diverges from truth. The savings ratio is tokenizer-agnostic; absolute Anthropic token counts differ slightly but the ratio holds.
+See **[BENCHMARK.md](./BENCHMARK.md)** — the full methodology, the honest range (0% floor, 72.1%
+synthetic ceiling, **−1.4% on 1,839 real sessions**), the losslessness invariant, and how to run the same
+harness against your own transcripts or any other context tool.
 
 ## Honest limits
 
-- Savings depend on workload: heavy on re-read/edit sessions, ~0 on read-once sessions.
-- It relies on the model applying a unified diff to its prior copy. That's bounded (only when the base is provably present this epoch) and escapable (`force_full`), but it is a behavioral dependency.
-- Symbol extraction is a heuristic brace/indent pass — robust and dependency-free, but not a full parser. Precise tree-sitter symbol extraction was evaluated and **deferred** for v1.0: `web-tree-sitter` had ABI/API mismatches with prebuilt WASM grammars across minor versions — too fragile for a production dependency. Tracked for v1.1 once a stable grammar toolchain is pinned.
+- Dedup savings depend on workload: real Claude Code sessions measure ~0% (see reality check); other clients without native file-state caching may see more. Measure yours: `npx tsx bench/real-session.ts`.
+- Diffs rely on the model applying a unified diff to its prior copy. That's bounded (only when the base is provably present this epoch) and escapable (`force_full`), but it is a behavioral dependency.
+- Receipts attest what **this server** sent the model — reads that bypass it (native `Read`) are not in the receipt. For complete coverage, route file reads through `read_file`/`read_files`.
+- Symbol extraction is a heuristic brace/indent pass — robust and dependency-free, but not a full parser. Precise tree-sitter extraction was evaluated and **deferred**: `web-tree-sitter` had ABI/API mismatches with prebuilt WASM grammars across minor versions — too fragile for a production dependency.
+- `lossless_stats` was renamed `context_stats` in v1.1.
 
 ## Status
 
-**v1.0.1** — SHA-256 change detection (provably, not probabilistically, lossless), string/comment-aware symbol slicing, bounded-memory ledger, diff/marker self-check fallback, full error-path smoke coverage. `npm run build` clean, `npm test` green (engine losslessness invariant + symbol/line slicing), benchmark lossless across scenarios, over-the-wire stdio smoke passes. MIT.
+**v1.1.0** — context ledger release: per-repo token metering with USD estimates (`context_stats`), signed context receipts (`context_receipt`/`verify_context_receipt`, HMAC-SHA256 over a canonicalized receipt, timing-safe verify), batch working-set reads (`read_files`), plus everything from v1.0.1 (SHA-256 change detection — provably, not probabilistically, lossless; string/comment-aware symbol slicing; bounded-memory ledger; full error-path smoke coverage). `npm run build` clean, `npm test` green (30 tests incl. the 400-op losslessness invariant and receipt tamper-rejection), benchmark lossless across scenarios, over-the-wire stdio smoke passes. MIT.

@@ -59,20 +59,33 @@ const noSym = await callRF(main, { path: f, symbol: 'zzz_missing' })
 const missing = await callRF(main, { path: fwd(join(tmp, 'nope.ts')) })
 console.log('6. error paths  -> binary:', bin.err, '| bad-lines:', badLines.err, '| no-symbol:', noSym.err, '| missing-file:', missing.err)
 
-const stats = (await main.rpc('tools/call', { name: 'lossless_stats', arguments: {} })).result.content[0].text
-console.log('7. stats        ->', stats.split('\n').slice(-1)[0])
+const stats = (await main.rpc('tools/call', { name: 'context_stats', arguments: {} })).result.content[0].text
+console.log('7. stats        ->', stats.split('\n')[4].trim())
+
+// Batch working-set read: g.ts is fresh (full), demo.ts should dedup to unchanged.
+const g = fwd(join(tmp, 'g.ts')); writeFileSync(g, 'export const gg = 1\n')
+const batch = (await main.rpc('tools/call', { name: 'read_files', arguments: { paths: [f, g] } })).result.content[0].text
+console.log('8. read_files   ->', batch.split('\n')[0])
+
+// Signed context receipt roundtrip + tamper rejection.
+const issued = JSON.parse((await main.rpc('tools/call', { name: 'context_receipt', arguments: { artifact: 'smoke' } })).result.content[0].text)
+const okVerify = JSON.parse((await main.rpc('tools/call', { name: 'verify_context_receipt', arguments: { receipt: issued.receipt, signature: issued.signature } })).result.content[0].text)
+const tampered = JSON.parse((await main.rpc('tools/call', { name: 'verify_context_receipt', arguments: { receipt: { ...issued.receipt, artifact: 'evil' }, signature: issued.signature } })).result.content[0].text)
+console.log('9. receipt      -> valid:', okVerify.valid, '| tampered rejected:', tampered.valid === false, '| files attested:', issued.receipt.totals.files)
 main.p.stdin.end()
 
 // Oversize path on an isolated server with a tiny cap.
 const tiny = await connect({ LOSSLESS_MAX_BYTES: '5' })
 await handshake(tiny)
 const over = await callRF(tiny, { path: f })
-console.log('8. oversize     ->', over.err, over.t.slice(0, 40).replace(/\n/g, ' '))
+console.log('10. oversize    ->', over.err, over.t.slice(0, 40).replace(/\n/g, ' '))
 tiny.p.stdin.end()
 
 const pass =
   /full content/.test(first) && /byte-identical|reuse/.test(second) && /unified diff/.test(third) &&
   /symbol v30/.test(sym.t) && /lines 10-12/.test(rng.t) &&
-  bin.err && /binary/i.test(bin.t) && badLines.err && noSym.err && missing.err && over.err
-console.log('\nSMOKE:', pass ? 'PASS (reads + slices + all error paths + oversize)' : 'FAIL')
+  bin.err && /binary/i.test(bin.t) && badLines.err && noSym.err && missing.err && over.err &&
+  /byte-identical|reuse/.test(batch) && /gg = 1/.test(batch) &&
+  okVerify.valid === true && tampered.valid === false
+console.log('\nSMOKE:', pass ? 'PASS (reads + slices + batch + receipts + all error paths + oversize)' : 'FAIL')
 process.exit(pass ? 0 : 1)
