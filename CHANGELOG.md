@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+Context ledger release: per-repo token metering with USD estimates (`context_stats`) and signed read receipts. See the README for the full description.
+
 ## 1.0.1
 
 Hardening from the BSHR code-review (R1, score 7.8 → addressed all 6 MEDIUMs):
