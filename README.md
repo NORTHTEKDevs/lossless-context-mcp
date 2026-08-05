@@ -50,9 +50,7 @@ The test suite encodes this as a hard invariant: a 400-op randomized sequence (r
 ## Install
 
 ```bash
-# NOT YET ON NPM - until it ships, install from a local clone:
-# git clone this repo, npm install, and register the server by its local path.
-npm i -g lossless-context-mcp        # once published; or: npx lossless-context-mcp
+npm i -g lossless-context-mcp        # or: npx lossless-context-mcp
 claude mcp add lossless-context --scope user -- lossless-context-mcp
 ```
 
