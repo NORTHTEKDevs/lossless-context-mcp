@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+The never-lose engine. Replaying 3,363 real transcripts showed the old engine LOST 2.6%:
+unified diffs regularly exceed the file they patch, and the unchanged-marker exceeds the
+tiny re-reads it replaces. The engine now emits whichever is smaller, always: marker only
+when the content is bigger than the marker's wire cost, diff only when the patch is
+smaller than the file, full content otherwise. It is now structurally unable to cost more
+than native reads. Losslessness invariant unchanged (32 tests, incl. two new never-lose
+regressions). BENCHMARK.md carries the before/after replay numbers.
+
 ## 1.1.0
 
 Context ledger release: per-repo token metering with USD estimates (`context_stats`) and signed read receipts. See the README for the full description.

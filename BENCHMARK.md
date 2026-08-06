@@ -33,10 +33,19 @@ reads / 116 MB, real tokenizer): **−2.6%**, losslessness clean. The re-read ra
 17.4%, but most re-reads arrive *changed*, and a unified diff regularly exceeds the content it
 patches. A marker-only dedup tool graded through this same harness on the same corpus (no diff
 path, marker on unchanged, full content on change) measured **−0.2%** — and the theoretical
-maximum for *any* intra-session read-dedup tool on this corpus, computed with a zero-cost
-marker, is about **0.2%**: the average unchanged re-read is roughly 29 tokens of content,
-because the harness's native cache already suppresses the big ones. The niche is not
+maximum for *any* naive intra-session read-dedup tool on this corpus, computed with a
+zero-cost marker, is about **0.2%**: the average unchanged re-read is roughly 29 tokens of
+content, because the harness's native cache already suppresses the big ones. The niche is not
 badly-served; it is already served.
+
+**v1.2 (the never-lose engine), same corpus, same day: +0.4%** (105,386 tokens saved),
+losslessness clean. The engine now emits whichever is smaller — marker vs content, diff vs
+content — so it is structurally unable to cost more than native reads. The filter is brutal
+and honest: of 2,142 unchanged re-reads only 11 were big enough for a marker to pay, and of
+2,388 changed re-reads only 133 produced a diff smaller than the file. Nearly all the savings
+come from those 133: large files re-read after a small edit, where a short diff replaces tens
+of thousands of tokens. That is the one real dedup win left in modern Claude Code sessions,
+and the engine now takes exactly it, and nothing else.
 
 ## Why replay-based evaluation
 

@@ -6,7 +6,17 @@ const TS = `import { x } from './x'
 
 export function alpha(a: number): number {
   const y = a + 1
-  return y
+  const acc: number[] = []
+  for (let i = 0; i < 16; i++) {
+    acc.push(y * i + a)
+  }
+  const total = acc.reduce((s, v) => s + v, 0)
+  const scaled = total > 100 ? total / 2 : total * 2
+  const label = 'alpha result for input ' + String(a)
+  if (scaled > 1000) {
+    return Math.floor(scaled)
+  }
+  return y + total + label.length
 }
 
 export class Beta {

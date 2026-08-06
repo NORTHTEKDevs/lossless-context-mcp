@@ -13,8 +13,13 @@ A **context ledger** for agent file reads: provably-lossless dedup of re-reads, 
 > product for normal use.** Reproduce: `npx tsx bench/real-session.ts`.
 >
 > Re-measured 2026-08-06 on a grown corpus (**3,363 transcripts, 26,041 reads, 116 MB**): **−2.6%**,
-> losslessness clean. The computed ceiling for *any* intra-session read-dedup tool on that corpus is
-> about **0.2%** — the big re-reads are already gone before any tool sees them. Numbers in BENCHMARK.md.
+> losslessness clean. The computed ceiling for *any* naive intra-session read-dedup tool on that corpus
+> is about **0.2%** — the big re-reads are already gone before any tool sees them.
+>
+> **v1.2 fixes the economics**: the engine emits whichever is smaller (marker vs content, diff vs
+> content), making it structurally unable to cost more than native reads. Same corpus, same day:
+> **+0.4%** — almost entirely from large files re-read after small edits, the one dedup win that
+> still exists. Small, real, and never negative. The ledger remains the reason this exists.
 
 The earlier **~72%** figure is a **synthetic** edit-loop that re-reads the same files dozens of times — a
 ceiling, not a typical workload (see [BENCHMARK.md](./BENCHMARK.md) for the full methodology and range).
@@ -98,4 +103,4 @@ harness against your own transcripts or any other context tool.
 
 ## Status
 
-**v1.1.0** — context ledger release: per-repo token metering with USD estimates (`context_stats`), signed context receipts (`context_receipt`/`verify_context_receipt`, HMAC-SHA256 over a canonicalized receipt, timing-safe verify), batch working-set reads (`read_files`), plus everything from v1.0.1 (SHA-256 change detection — provably, not probabilistically, lossless; string/comment-aware symbol slicing; bounded-memory ledger; full error-path smoke coverage). `npm run build` clean, `npm test` green (30 tests incl. the 400-op losslessness invariant and receipt tamper-rejection), benchmark lossless across scenarios, over-the-wire stdio smoke passes. MIT.
+**v1.2.0** — the never-lose engine: measured on 3,363 real transcripts, the old always-diff/always-marker behavior cost 2.6% MORE than native reads, so the engine now emits whichever is smaller (marker vs content, diff vs content) and is structurally unable to cost more than baseline. Plus the v1.1.0 ledger: per-repo token metering with USD estimates (`context_stats`), signed context receipts (`context_receipt`/`verify_context_receipt`, HMAC-SHA256, timing-safe verify), batch working-set reads (`read_files`), SHA-256 change detection (provably, not probabilistically, lossless), bounded-memory ledger. `npm run build` clean, `npm test` green (32 tests incl. the 400-op losslessness invariant and two never-lose regressions), over-the-wire stdio smoke passes. MIT.
