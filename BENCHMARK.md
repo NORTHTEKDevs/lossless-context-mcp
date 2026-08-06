@@ -28,6 +28,16 @@ typical Claude Code sessions sit at the floor because the harness's native file-
 already eliminated redundant re-reads. Any context tool that quotes only its ceiling is quoting
 the wrong number.
 
+**Re-measured 2026-08-06** on the same machine's grown corpus (3,363 transcripts / 26,041
+reads / 116 MB, real tokenizer): **−2.6%**, losslessness clean. The re-read rate had risen to
+17.4%, but most re-reads arrive *changed*, and a unified diff regularly exceeds the content it
+patches. A marker-only dedup tool graded through this same harness on the same corpus (no diff
+path, marker on unchanged, full content on change) measured **−0.2%** — and the theoretical
+maximum for *any* intra-session read-dedup tool on this corpus, computed with a zero-cost
+marker, is about **0.2%**: the average unchanged re-read is roughly 29 tokens of content,
+because the harness's native cache already suppresses the big ones. The niche is not
+badly-served; it is already served.
+
 ## Why replay-based evaluation
 
 Real-session replay grades a tool against *what agents actually do*, not what a demo script does.

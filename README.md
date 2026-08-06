@@ -11,6 +11,10 @@ A **context ledger** for agent file reads: provably-lossless dedup of re-reads, 
 > Code's native file-state cache already avoids redundant re-reads, so there is almost nothing left for this
 > to save, and on changed re-reads a unified diff can be larger than the file. **It is not a token-savings
 > product for normal use.** Reproduce: `npx tsx bench/real-session.ts`.
+>
+> Re-measured 2026-08-06 on a grown corpus (**3,363 transcripts, 26,041 reads, 116 MB**): **−2.6%**,
+> losslessness clean. The computed ceiling for *any* intra-session read-dedup tool on that corpus is
+> about **0.2%** — the big re-reads are already gone before any tool sees them. Numbers in BENCHMARK.md.
 
 The earlier **~72%** figure is a **synthetic** edit-loop that re-reads the same files dozens of times — a
 ceiling, not a typical workload (see [BENCHMARK.md](./BENCHMARK.md) for the full methodology and range).
