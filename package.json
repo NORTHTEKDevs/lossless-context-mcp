@@ -1,6 +1,6 @@
 {
   "name": "lossless-context-mcp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A context ledger for agent file reads: provably-lossless dedup of re-reads, per-repo token metering with USD costs, and HMAC-signed receipts of exactly which file versions the model was shown.",
   "type": "module",
   "bin": {

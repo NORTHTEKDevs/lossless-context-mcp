@@ -18,9 +18,14 @@ import { outlineOf, renderOutline } from './outline.js'
 import { looksBinary, findSymbol, sliceLines } from './slice.js'
 import { ContextMeter, usd } from './meter.js'
 import { buildContextReceipt, receiptKey, signReceipt, verifyReceipt, type ContextReceipt } from './receipt.js'
+import { SingleSessionGuard } from './session-guard.js'
 
 const engine = new LosslessEngine()
 const meter = new ContextMeter()
+// See session-guard.ts: this process is single-session by construction (stdio transport +
+// SDK connect() guard). Claim it explicitly so a violated invariant fails loud, not silent.
+const sessionGuard = new SingleSessionGuard()
+sessionGuard.claim()
 const MAX_BYTES = Number(process.env.LOSSLESS_MAX_BYTES || 2_000_000)
 
 const text = (s: string, isError = false) => ({ content: [{ type: 'text' as const, text: s }], isError })

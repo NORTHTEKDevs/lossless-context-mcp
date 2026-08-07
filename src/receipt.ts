@@ -54,7 +54,13 @@ export function buildContextReceipt(events: MeterEvent[], artifact: string, now 
     epochs.add(e.epoch)
     baseline += e.baselineTokens
     sent += e.sentTokens
-    const key = e.path + '::' + e.view
+    // JSON-encode [path, view] rather than concatenating with a "::" separator: a bare
+    // `path + '::' + view` join is ambiguous — path "dir::sub" view "full" and path "dir"
+    // view "sub::full" both concatenate to "dir::sub::full" and would silently merge into
+    // one file attestation, letting one receipt misrepresent which file a hash belongs to.
+    // JSON.stringify escapes embedded quotes/delimiters, so distinct [path, view] pairs
+    // always produce distinct keys.
+    const key = JSON.stringify([e.path, e.view])
     let f = byKey.get(key)
     if (!f) {
       f = { path: e.path, view: e.view, reads: 0, kinds: { full: 0, diff: 0, unchanged: 0 }, finalHash: e.hash, hashesSeen: [] }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { LosslessEngine, applyToModelView } from '../src/engine.ts'
+import { LosslessEngine, applyToModelView, normalizeKey, normalizeKeyFor } from '../src/engine.ts'
 
 // A harness that mirrors the model's reconstructed view and the on-disk truth, so every
 // assertion is the real losslessness invariant: what the model can reconstruct == truth.
@@ -20,6 +20,26 @@ function harness() {
   const check = (path: string) => expect(view.get(path)).toBe(truth.get(path))
   return { engine, view, truth, read, write, compact, check }
 }
+
+describe('normalizeKeyFor (BUG: path keys must be case-sensitive on case-sensitive filesystems)', () => {
+  it('case-insensitive mode (win32) collapses case-only-distinct paths to one key', () => {
+    expect(normalizeKeyFor('/a/File.ts', true)).toBe(normalizeKeyFor('/a/file.ts', true))
+  })
+  it('case-sensitive mode (Linux/mac) keeps case-only-distinct paths as distinct keys', () => {
+    expect(normalizeKeyFor('/a/File.ts', false)).not.toBe(normalizeKeyFor('/a/file.ts', false))
+  })
+  it('always normalizes backslashes to forward slashes regardless of case mode', () => {
+    expect(normalizeKeyFor('a\\b\\c.ts', false)).toBe('a/b/c.ts')
+    expect(normalizeKeyFor('a\\b\\C.ts', true)).toBe('a/b/c.ts')
+  })
+})
+
+describe('normalizeKey (platform-bound wrapper)', () => {
+  it('only lowercases on win32 — matches normalizeKeyFor for the current platform', () => {
+    const caseInsensitive = process.platform === 'win32'
+    expect(normalizeKey('/a/File.ts')).toBe(normalizeKeyFor('/a/File.ts', caseInsensitive))
+  })
+})
 
 describe('LosslessEngine', () => {
   it('returns full on first read, unchanged marker on identical re-read', () => {

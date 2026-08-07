@@ -46,8 +46,18 @@ export function hashContent(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex')
 }
 
+/** Pure helper: backslash-normalize always, lowercase only when `caseInsensitive`. */
+export function normalizeKeyFor(p: string, caseInsensitive: boolean): string {
+  const slashed = p.replace(/\\/g, '/')
+  return caseInsensitive ? slashed.toLowerCase() : slashed
+}
+
+// Ledger keys must match filesystem case semantics: Windows paths are case-insensitive, so
+// two case-only-distinct paths ARE the same file there. Linux/mac filesystems are
+// case-sensitive, so lowercasing there would collapse genuinely distinct files
+// (/a/File.ts vs /a/file.ts) into one ledger entry — wrong dedup/diff base.
 export function normalizeKey(p: string): string {
-  return p.replace(/\\/g, '/').toLowerCase()
+  return normalizeKeyFor(p, process.platform === 'win32')
 }
 
 // Memory bound for the in-epoch ledger. Evicting an entry just makes a future read of it

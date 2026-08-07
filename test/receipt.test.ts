@@ -52,6 +52,35 @@ describe('buildContextReceipt', () => {
   })
 })
 
+describe('buildContextReceipt file-key collision (BUG: path+view concatenated with an unescaped "::" delimiter)', () => {
+  // Two genuinely different reads: file "dir::sub" viewed as "full", and a DIFFERENT file
+  // "dir" viewed as "sub::full". Naively joining with `path + '::' + view` maps both to the
+  // same grouping key ("dir::sub::full"), merging two distinct files into one attestation.
+  const eventsTwoDistinctFiles: MeterEvent[] = [
+    ev({ path: 'dir::sub', view: 'full', kind: 'full', hash: 'h1', baselineTokens: 5, sentTokens: 5 }),
+    ev({ path: 'dir', view: 'sub::full', kind: 'diff', hash: 'h2', baseHash: 'h1', baselineTokens: 5, sentTokens: 5 }),
+  ]
+  // One real file, "dir::sub"/"full", legitimately read twice (full, then a diff).
+  const eventsOneFileTwice: MeterEvent[] = [
+    ev({ path: 'dir::sub', view: 'full', kind: 'full', hash: 'h1', baselineTokens: 5, sentTokens: 5 }),
+    ev({ path: 'dir::sub', view: 'full', kind: 'diff', hash: 'h2', baseHash: 'h1', baselineTokens: 5, sentTokens: 5 }),
+  ]
+  const t = new Date('2026-07-05T01:00:00Z')
+
+  it('keeps two distinct (path,view) reads as two distinct file attestations', () => {
+    const receiptA = buildContextReceipt(eventsTwoDistinctFiles, 'x', t)
+    expect(receiptA.files.length).toBe(2)
+  })
+
+  it('does not let two semantically different receipts sign identically', () => {
+    const receiptA = buildContextReceipt(eventsTwoDistinctFiles, 'x', t)
+    const receiptB = buildContextReceipt(eventsOneFileTwice, 'x', t)
+    const key = 'test-key'
+    expect(stableStringify(receiptA)).not.toBe(stableStringify(receiptB))
+    expect(signReceipt(receiptA, key)).not.toBe(signReceipt(receiptB, key))
+  })
+})
+
 describe('sign/verify', () => {
   const key = 'test-key'
   const receipt = buildContextReceipt([ev({})], 'artifact', new Date('2026-07-05T01:00:00Z'))

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1
+
+Three bugs found by an effort-routing A/B experiment's reviewers, judge-verified, fixed with regression tests:
+
+- **Path keys are case-sensitive on case-sensitive filesystems** — `normalizeKey` lowercased every path unconditionally, so on Linux/mac (case-sensitive filesystems) two distinct files differing only in case (e.g. `/a/File.ts` vs `/a/file.ts`) collided into one ledger entry, corrupting dedup/diff bases. Now lowercases only on `win32`.
+- **Concurrent-session guard for shared process state** — `engine`/`meter`/epoch are process-wide singletons, safe only because this stdio server is one-client-per-process (the MCP SDK's `connect()` throws on a second transport, and stdio never populates a session id). Added `SingleSessionGuard` to fail loudly with a clear message if that invariant is ever violated, instead of silently cross-contaminating state.
+- **Receipt canonicalization signature collision (security fix)** — `buildContextReceipt` grouped file attestations with `path + '::' + view`, an unescaped delimiter join: `path="dir::sub", view="full"` and `path="dir", view="sub::full"` concatenated to the same key, silently merging two distinct files into one attestation. This let two semantically different context receipts (e.g. two different files read once each vs. one file read twice) sign identically under the old key. Fixed by JSON-encoding `[path, view]` as the grouping key. `verifyReceipt` is unchanged and continues to check a stored receipt+signature pair as-is, so already-issued receipts still verify — the break is narrower and specific: re-deriving a NEW receipt from an event log that contains a colliding `path`/`view` pair (one containing literal `::`) now produces a different (correct) receipt, and its signature will not match one generated pre-1.2.1 from the same log. Treat any pre-1.2.1 receipt whose underlying paths/views could contain `::` as unverified and re-issue it.
+
 ## 1.2.0
 
 The never-lose engine. Replaying 3,363 real transcripts showed the old engine LOST 2.6%:
