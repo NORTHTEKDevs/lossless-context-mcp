@@ -10,6 +10,8 @@ Dependency security release, no behavior change:
 
 Verified: 40/40 tests, build clean, over-the-wire smoke PASS. `npm audit` after: 0 critical (remaining findings are transitive inside the SDK's HTTP adapters plus dev-only esbuild).
 
+Also adds MCP Registry metadata: `mcpName` (`io.github.northtekdevs/lossless-context-mcp`) in `package.json`, plus `server.json` and `glama.json` at the repo root.
+
 ## 1.2.1
 
 Three bugs found by an effort-routing A/B experiment's reviewers, judge-verified, fixed with regression tests:
