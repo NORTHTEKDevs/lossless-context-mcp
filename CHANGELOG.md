@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.2
+
+Dependency security release, no behavior change:
+
+- `@modelcontextprotocol/sdk` ^1.0.4 -> ^1.30.0 - clears the runtime-scope Dependabot alerts (hono, fast-uri and friends were transitive via the very old SDK pin). This server only uses the stdio transport; the SDK's HTTP-transport dependency tree was never on a code path here, but the alerts are gone regardless.
+- `diff` ^7 -> ^8.0.2 - fixes the jsdiff parsePatch/applyPatch DoS advisory (GHSA low). `@types/diff` dropped; v8 ships its own types.
+- `zod` ^3.23.8 -> ^3.25.0 (SDK peer range), `vitest` ^2 -> ^3 - clears the dev-only critical advisories.
+
+Verified: 40/40 tests, build clean, over-the-wire smoke PASS. `npm audit` after: 0 critical (remaining findings are transitive inside the SDK's HTTP adapters plus dev-only esbuild).
+
 ## 1.2.1
 
 Three bugs found by an effort-routing A/B experiment's reviewers, judge-verified, fixed with regression tests:
