@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3
+
+Metadata-only: fix `mcpName` case to `io.github.NORTHTEKDevs/lossless-context-mcp` - the MCP Registry matches the GitHub namespace case-sensitively, and npm versions are immutable, so the lowercase value shipped in 1.2.2 could never validate. No code change.
+
 ## 1.2.2
 
 Dependency security release, no behavior change:

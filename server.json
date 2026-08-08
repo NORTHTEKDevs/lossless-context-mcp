@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.northtekdevs/lossless-context-mcp",
-  "description": "A context ledger for agent file reads: provably-lossless dedup of re-reads, per-repo token metering with USD costs, and HMAC-signed receipts of exactly which file versions the model was shown.",
+  "name": "io.github.NORTHTEKDevs/lossless-context-mcp",
+  "description": "Context ledger for agent file reads: lossless re-read dedup, token metering, signed read receipts.",
   "repository": {
     "url": "https://github.com/NORTHTEKDevs/lossless-context-mcp",
     "source": "github"
   },
-  "version": "1.2.2",
+  "version": "1.2.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "lossless-context-mcp",
-      "version": "1.2.2",
+      "version": "1.2.3",
       "transport": {
         "type": "stdio"
       }
