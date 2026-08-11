@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0 — init, the blind-edit guard, and context blame
+
+- **`lossless-context-mcp init`** — one-command hook installation into
+  `~/.claude/settings.json`: idempotent (upgrades update paths, never duplicate), backs
+  up first, fails closed on unparseable settings, never touches hooks that aren't its
+  own. `--dry-run` previews. This replaces the hand-edited settings block as the
+  documented install path.
+- **Blind-edit guard** (`hooks/guard-edit.mjs`, PreToolUse `Edit|Write|MultiEdit`) —
+  denies, with a re-read instruction the model sees, (a) edits to files not read in the
+  CURRENT context epoch (the post-compaction guess-edit class) and (b) edits whose
+  on-disk content hash differs from the version the model read (the stale-base class).
+  Incremental transcript indexing from a persisted byte offset; strictly fail-open
+  (any doubt → allow); `LOSSLESS_GUARD=off` to disable.
+- **Context blame** (`context_blame` tool + `lossless-context-mcp blame <path>` CLI) —
+  per-file version timeline (SHA-256, git blob SHA-1, first/last seen, sources,
+  sessions) plus co-context around a focus moment, from the archive.
+- Tests 75 → 98; wire smoke extended with the guard deny→read→allow loop, blame
+  tool+CLI, and init dry-run.
+
 ## 1.3.0 — the flight recorder
 
 The product transformation: from "context ledger with marginal dedup" to **the flight

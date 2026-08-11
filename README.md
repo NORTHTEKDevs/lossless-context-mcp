@@ -40,7 +40,27 @@ Cross-*session* memory tools (claude-mem and friends) summarize what happened fo
 next session. This is the complementary, mid-session layer: **file-version-exact recovery
 of what you were just working on.**
 
-## 2. Packs: stop paying for the same files in every subagent
+## 2. Blind-edit guard: the recorder as an active safety net
+
+The recorder knows exactly which file versions the model has actually seen this context
+epoch. A `PreToolUse` hook uses that to stop the two ugliest edit failures *before the
+write lands*:
+
+- **Post-compaction guess-edits** — the model edits a file it hasn't read since its
+  context was compacted/reset, working from a summary's memory of the content. (The
+  harness's own read-before-edit tracking is not documented to survive compaction, and
+  newer models are allowed to edit unread files at all.) Denied, with a one-line reason
+  the model sees: *read it (or restore_context), then retry.* Self-healing — costs
+  exactly one extra read.
+- **Stale-base edits** — the file changed on disk since the model read it (another
+  agent, you, a formatter). Content-hash compared, not mtime-guessed. Denied with the
+  same re-read instruction.
+
+Fail-open by construction: any doubt (unparseable transcript, partial reads, files the
+model itself just edited, oversized files) → the edit proceeds untouched. Disable
+anytime with `LOSSLESS_GUARD=off`.
+
+## 3. Packs: stop paying for the same files in every subagent
 
 Fan-outs are where token waste actually lives. Measured across 195 real multi-agent runs:
 **19.6% of all subagent `Read` tokens were duplicate reads of identical content by sibling
@@ -57,7 +77,15 @@ corpus, not by a harness in this repo — exact figures, method, and that caveat
 [BENCHMARK.md](./BENCHMARK.md). Generate the pack once per run and embed it verbatim:
 ranking follows live read history, so repeated `export_pack` calls can differ.
 
-## 3. Receipts: prove what the model saw, bound to git
+## 4. Blame: what did the agent see when it did that?
+
+`context_blame` (also a CLI: `lossless-context-mcp blame <path>`) answers the debugging
+question every agent incident report wishes it could: for a given file, every content
+version the model was shown (SHA-256 + git blob SHA-1, first/last seen, capture source,
+sessions) and what else was in context around a chosen moment. When an agent produces a
+wrong change, you query the recording instead of arguing with the agent's self-report.
+
+## 5. Receipts: prove what the model saw, bound to git
 
 Observability vendors capture what your agent read into mutable trace stores. Nobody
 signs it or binds it to repo identity — and agent self-reports are not evidence (ask
@@ -74,7 +102,7 @@ evidence chain: *what the agent saw + what it did*.
 **The honest scope**: a receipt attests what passed through the ledger and sweeps — it
 never claims coverage of unmediated paths, and says so in its own `coverage.note`.
 
-## 4. Metering (and the token-saver reality check)
+## 6. Metering (and the token-saver reality check)
 
 `context_stats` shows where the session's file-read tokens went — per repo, per file, in
 dollars, counted with a real tokenizer.
@@ -86,42 +114,29 @@ dollars, counted with a real tokenizer.
 > above). Read-path dedup remains because it is provably lossless and never negative —
 > not because it will save you much on its own.
 
-## Install
+## Install (two commands)
 
 ```bash
 npm i -g lossless-context-mcp
+lossless-context-mcp init        # wires all hooks into ~/.claude/settings.json
 claude mcp add lossless-context --scope user -- lossless-context-mcp
 ```
 
-Wire the flight-recorder hooks in `~/.claude/settings.json` (`npm root -g` shows the
-install root; on Windows use forward slashes):
-
-```json
-{
-  "hooks": {
-    "PreCompact": [
-      { "hooks": [{ "type": "command", "command": "node <global-root>/lossless-context-mcp/hooks/sweep-transcript.mjs" }] }
-    ],
-    "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "node <global-root>/lossless-context-mcp/hooks/sweep-transcript.mjs" }] }
-    ],
-    "SessionStart": [
-      { "matcher": "compact", "hooks": [{ "type": "command", "command": "node <global-root>/lossless-context-mcp/hooks/inject-manifest.mjs" }] },
-      { "hooks": [{ "type": "command", "command": "node <global-root>/lossless-context-mcp/hooks/reset-epoch.mjs" }] }
-    ]
-  }
-}
-```
+`init` is idempotent (re-run it after upgrades — it updates paths instead of
+duplicating), backs up your settings file first, refuses to touch a settings file it
+can't parse, and never removes hooks that aren't its own. `--dry-run` previews. It wires:
 
 - `sweep-transcript.mjs` (PreCompact + SessionEnd) — captures the working set + exact
   versions; bumps the dedup epoch on PreCompact; never blocks compaction.
-- `inject-manifest.mjs` (SessionStart, matcher `compact`; add `resume` if wanted) —
-  injects the recovered working-set manifest.
-- `reset-epoch.mjs` (SessionStart, no matcher) — keeps read dedup lossless across new
-  sessions.
+- `inject-manifest.mjs` (SessionStart, matcher `compact`) — injects the recovered
+  working-set manifest after a compaction.
+- `reset-epoch.mjs` (SessionStart) — keeps read dedup lossless across new sessions.
+- `guard-edit.mjs` (PreToolUse, `Edit|Write|MultiEdit`) — the blind-edit guard
+  (`LOSSLESS_GUARD=off` disables without unwiring).
 
-Without the hooks everything still works — you just lose automatic capture of native-tool
-activity and post-compaction injection; the ledger then records MCP reads only.
+Restart Claude Code after init. Without the hooks everything still works — you just lose
+automatic native-tool capture, post-compaction injection, and the guard; the ledger then
+records MCP reads only.
 
 ## Tools
 
@@ -132,6 +147,7 @@ activity and post-compaction injection; the ledger then records MCP reads only.
 | `working_set(limit?)` | Heat-ranked table of what the recorder knows this session (+ last 24h), with staleness vs disk. |
 | `restore_context(files?, budget_tokens?)` | Re-emit the working set after compaction — manifest top-K by default, budget-capped, change-annotated. |
 | `export_pack(repo?, top?, budget_tokens?, days?)` | Deterministic fan-out context pack from cross-session read history, for an agent-type system prompt. |
+| `context_blame(path, at?, window_minutes?)` | Forensics: every version of a file the model was shown, plus co-context around a moment. Also: `lossless-context-mcp blame <path>` from the shell. |
 | `outline(path)` | Cheap structural map of a file (declarations only). |
 | `context_stats()` | Token/dollar breakdown of this session's reads. |
 | `context_receipt(artifact, include_sweep?)` | Signed, git-bound context receipt with explicit coverage. |

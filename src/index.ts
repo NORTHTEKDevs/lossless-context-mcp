@@ -27,6 +27,38 @@ import { Archive, approxTokens, isExcluded } from './archive.js'
 import { gitBlobSha1 } from './gitid.js'
 import { loadManifest, renderManifest, MANIFEST_TOP_K } from './restore.js'
 import { buildPack, renderPack } from './pack.js'
+import { blameContext, renderBlame } from './blame.js'
+
+// ---------------------------------------------------------------------------
+// Subcommands (no server startup): `init` wires the hooks, `blame` queries the
+// archive from the shell. No args -> stdio MCP server (the normal mode).
+const argv = process.argv.slice(2)
+if (argv[0] === 'init') {
+  const { runInit, renderInitResult } = await import('./init.js')
+  try {
+    console.log(renderInitResult(runInit({ dryRun: argv.includes('--dry-run') })))
+    process.exit(0)
+  } catch (e) {
+    console.error(`[lossless-context] init failed: ${(e as Error).message}`)
+    process.exit(1)
+  }
+}
+if (argv[0] === 'blame') {
+  const target = argv[1]
+  if (!target || target.startsWith('--')) {
+    console.error('usage: lossless-context-mcp blame <path> [--at <ISO timestamp>]')
+    process.exit(1)
+  }
+  const atIdx = argv.indexOf('--at')
+  try {
+    const a = new Archive()
+    console.log(renderBlame(blameContext(a, target, { at: atIdx >= 0 ? argv[atIdx + 1] : undefined })))
+    process.exit(0)
+  } catch (e) {
+    console.error(`[lossless-context] blame failed: ${(e as Error).message}`)
+    process.exit(1)
+  }
+}
 
 const engine = new LosslessEngine()
 const meter = new ContextMeter()
@@ -161,7 +193,7 @@ function readOne(path: string, opts: ReadOpts): { text: string; isError: boolean
   return { text: render(r, label), isError: false }
 }
 
-const server = new McpServer({ name: 'lossless-context', version: '1.3.0' })
+const server = new McpServer({ name: 'lossless-context', version: '1.4.0' })
 
 server.tool(
   'read_file',
@@ -420,6 +452,27 @@ server.tool(
       return text(renderPack(pack))
     } catch (e) {
       return text(`[lossless-context] pack build failed: ${(e as Error).message}`, true)
+    }
+  },
+)
+
+server.tool(
+  'context_blame',
+  'Forensics: what did the agent see of this file, and when? Every content version the ' +
+    'flight recorder observed (SHA-256 + git blob SHA-1, first/last seen, capture source, ' +
+    'sessions), plus what else was in context around a focus moment. The evidence-backed ' +
+    'answer to "why did the agent do that?" — query history instead of trusting self-report.',
+  {
+    path: z.string().describe('The file to blame.'),
+    at: z.string().optional().describe('Focus moment (ISO timestamp). Default: last time the file was seen.'),
+    window_minutes: z.number().int().min(1).max(720).optional().describe('Co-context window around the focus (default 30).'),
+  },
+  async ({ path, at, window_minutes }) => {
+    if (!archive) return text('[lossless-context] archive unavailable; no history to blame.', true)
+    try {
+      return text(renderBlame(blameContext(archive, path, { at, windowMinutes: window_minutes })))
+    } catch (e) {
+      return text(`[lossless-context] blame failed: ${(e as Error).message}`, true)
     }
   },
 )

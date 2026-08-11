@@ -115,12 +115,57 @@ console.log('13. working_set  ->', workingSet.split('\n')[0])
 const pack = await callTool(main, 'export_pack', { top: 3 })
 console.log('14. export_pack  ->', pack.split('\n')[0])
 
+// --- Blind-edit guard: deny (never read) -> read -> allow -------------------------------
+const guardTranscript = fwd(join(tmp, 'guard-session.jsonl'))
+// Realistic: the pending Edit's OWN tool_use line is already in the transcript when
+// PreToolUse fires — the guard must not let the call vouch for itself.
+writeFileSync(guardTranscript, JSON.stringify({
+  timestamp: new Date().toISOString(),
+  message: { content: [{ type: 'tool_use', id: 'pending', name: 'Edit', input: { file_path: f, old_string: 'a', new_string: 'b' } }] },
+}) + '\n')
+const guardPayload = (extra = {}) => ({
+  hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: f },
+  session_id: 'smoke-guard', transcript_path: guardTranscript, ...extra,
+})
+const denied = await runHook('hooks/guard-edit.mjs', guardPayload())
+let deniedDecision = ''
+try { deniedDecision = JSON.parse(denied.out).hookSpecificOutput.permissionDecision } catch {}
+// Model "reads" the current content -> guard must now allow.
+const { readFileSync: rfs, appendFileSync: afs } = await import('node:fs')
+const currentF = rfs(f, 'utf8')
+afs(guardTranscript, JSON.stringify({
+  timestamp: new Date(Date.now() + 1500).toISOString(),
+  toolUseResult: { type: 'text', file: { filePath: f, content: currentF, numLines: 120, startLine: 1, totalLines: 120 } },
+}) + '\n')
+const allowed = await runHook('hooks/guard-edit.mjs', guardPayload())
+console.log('15. guard        -> unread edit:', deniedDecision, '| after read: ', allowed.out === '' ? 'allowed' : 'STILL BLOCKED', '| exit codes:', denied.code, allowed.code)
+
+// --- Context blame: MCP tool + CLI ------------------------------------------------------
+const blameOut = await callTool(main, 'context_blame', { path: f })
+console.log('16. blame tool   ->', blameOut.split('\n')[0])
+const blameCli = await new Promise((resolve) => {
+  const p = spawn('node', ['dist/index.js', 'blame', f], { env: { ...process.env, LOSSLESS_CONTEXT_DIR: ctxDir } })
+  let out = ''
+  p.stdout.on('data', (d) => (out += d))
+  p.on('close', (code) => resolve({ out, code }))
+})
+console.log('17. blame CLI    -> exit', blameCli.code, '|', blameCli.out.split('\n')[0].slice(0, 70))
+
+// --- init --dry-run (must not touch any real settings) ----------------------------------
+const initDry = await new Promise((resolve) => {
+  const p = spawn('node', ['dist/index.js', 'init', '--dry-run'], { env: { ...process.env, LOSSLESS_CONTEXT_DIR: ctxDir } })
+  let out = ''
+  p.stdout.on('data', (d) => (out += d))
+  p.on('close', (code) => resolve({ out, code }))
+})
+console.log('18. init dry-run -> exit', initDry.code, '|', (initDry.out.split('\n')[0] || '').slice(0, 60))
+
 // Signed context receipt v2: git binding + coverage + sweep attestation + tamper reject.
 const issued = JSON.parse(await callTool(main, 'context_receipt', { artifact: 'smoke', include_sweep: true }))
 const okVerify = JSON.parse(await callTool(main, 'verify_context_receipt', { receipt: issued.receipt, signature: issued.signature }))
 const tampered = JSON.parse(await callTool(main, 'verify_context_receipt', { receipt: { ...issued.receipt, artifact: 'evil' }, signature: issued.signature }))
 console.log(
-  '15. receipt v2   -> valid:', okVerify.valid,
+  '19. receipt v2   -> valid:', okVerify.valid,
   '| tampered rejected:', tampered.valid === false,
   '| version:', issued.receipt.version,
   '| coverage:', issued.receipt.coverage?.sources.join('+'),
@@ -133,7 +178,7 @@ main.p.stdin.end()
 const tiny = await connect({ LOSSLESS_MAX_BYTES: '5' })
 await handshake(tiny)
 const over = await callRF(tiny, { path: f })
-console.log('16. oversize     ->', over.err, over.t.slice(0, 40).replace(/\n/g, ' '))
+console.log('20. oversize     ->', over.err, over.t.slice(0, 40).replace(/\n/g, ' '))
 tiny.p.stdin.end()
 
 const pass =
@@ -145,8 +190,11 @@ const pass =
   restored.includes('restore:') && new RegExp(f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(restored) &&
   workingSet.includes('working set') &&
   pack.includes('context pack') && pack.includes('system prompt') &&
+  deniedDecision === 'deny' && allowed.out === '' && denied.code === 0 && allowed.code === 0 &&
+  blameOut.includes('version(s) shown to the model') && blameCli.code === 0 && blameCli.out.includes('blame') &&
+  initDry.code === 0 && initDry.out.includes('dry run') &&
   okVerify.valid === true && tampered.valid === false &&
   issued.receipt.version === 2 && issued.receipt.coverage.sources.includes('transcript-sweep') &&
   (issued.receipt.sweptFiles || []).length >= 1
-console.log('\nSMOKE:', pass ? 'PASS (reads + slices + batch + flight-recorder loop + receipts v2 + all error paths + oversize)' : 'FAIL')
+console.log('\nSMOKE:', pass ? 'PASS (reads + slices + batch + flight-recorder loop + guard + blame + init + receipts v2 + error paths)' : 'FAIL')
 process.exit(pass ? 0 : 1)
