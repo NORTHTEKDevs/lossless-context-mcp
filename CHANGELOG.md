@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.3.0 — the flight recorder
+
+The product transformation: from "context ledger with marginal dedup" to **the flight
+recorder for your agent's context** — one persistent archive, three views.
+
+- **Persistent archive** (`~/.lossless-context/archive`): content-addressed blobs +
+  append-only event logs of every file version shown, fed by both MCP reads and
+  transcript sweeps. Multi-process safe without locks; 512 MiB LRU cap; secret-pattern
+  deny list (`.env*`, keys, `.ssh`/`.aws`, credentials, + `LOSSLESS_ARCHIVE_EXCLUDE`)
+  keeps sensitive content out by construction.
+- **Restore**: `hooks/sweep-transcript.mjs` (PreCompact/SessionEnd) archives the session
+  working set — including native Read/Edit activity — and writes a ranked manifest;
+  `hooks/inject-manifest.mjs` (SessionStart, `compact` matcher) injects it into the fresh
+  context; new `restore_context` re-emits the working set budget-capped and
+  change-annotated; new `working_set` shows the recorder's view with staleness.
+- **Packs**: new `export_pack` renders stable hot files (ranked across sessions from
+  archive history) as one deterministic block for a custom agent-type system prompt, so
+  fan-out siblings hit the prompt cache instead of re-reading (46.55% cheaper on a real
+  measured fan-out; per-task injection measured worse — the tool says which).
+- **Receipts v2**: git binding (per-version git blob SHA-1; repo HEAD at issue time),
+  explicit `coverage` block (honest scope: mediated paths only), optional
+  `include_sweep` attestation of native-tool reads. v1 receipts still verify.
+  `stableStringify` now mirrors JSON.stringify's undefined semantics so signatures
+  always survive the client round-trip.
+- Transcript parsing is two-tier and fail-silent by design (the format is internal to
+  Claude Code): stable-surface path discovery + best-effort exact-version capture.
+- Tests 40 → 71; wire smoke extended to the full sweep → inject → restore → pack →
+  receipt-v2 loop; real-transcript validation (14 MB, 1,576 lines, 361 ms, 45 files).
+
 ## 1.2.3
 
 Metadata-only: fix `mcpName` case to `io.github.NORTHTEKDevs/lossless-context-mcp` - the MCP Registry matches the GitHub namespace case-sensitively, and npm versions are immutable, so the lowercase value shipped in 1.2.2 could never validate. No code change.

@@ -21,6 +21,8 @@ export interface MeterEvent {
   epoch: number
   hash: string // SHA-256 of current view content — what the model now holds
   baseHash?: string
+  /** Git blob SHA-1 of the view content (full-file views) — receipt git binding. */
+  gitBlobSha1?: string
   bytes: number
   baselineTokens: number
   sentTokens: number

@@ -1,6 +1,8 @@
 // Over-the-wire smoke: drives the compiled MCP server like a real client and covers the
-// happy path (full -> unchanged -> diff), slice views, and every error path (binary, bad
-// args, missing symbol, missing file, oversize). Exits non-zero on any failure.
+// happy path (full -> unchanged -> diff), slice views, every error path (binary, bad
+// args, missing symbol, missing file, oversize), and the full flight-recorder loop:
+// transcript sweep hook -> manifest -> inject hook -> restore_context -> export_pack ->
+// receipt v2 with git binding. Exits non-zero on any failure.
 import { spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,11 +10,15 @@ import { join } from 'node:path'
 
 const tmp = mkdtempSync(join(tmpdir(), 'lc-smoke-'))
 const fwd = (p) => p.replace(/\\/g, '/')
+const ctxDir = fwd(join(tmp, 'ctx')) // isolated flight-recorder root — never the real one
 const f = fwd(join(tmp, 'demo.ts'))
 writeFileSync(f, Array.from({ length: 120 }, (_, i) => `const v${i} = compute(${i}) // line ${i}`).join('\n'))
 
 function connect(env = {}) {
-  const p = spawn('node', ['dist/index.js'], { stdio: ['pipe', 'pipe', 'inherit'], env: { ...process.env, ...env } })
+  const p = spawn('node', ['dist/index.js'], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, LOSSLESS_CONTEXT_DIR: ctxDir, ...env },
+  })
   let buf = ''
   const waiters = []
   p.stdout.on('data', (d) => {
@@ -33,6 +39,19 @@ async function handshake(c) {
   c.p.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
 }
 const callRF = async (c, args) => { const r = await c.rpc('tools/call', { name: 'read_file', arguments: args }); return { t: r.result.content[0].text, err: r.result.isError === true } }
+const callTool = async (c, name, args = {}) => (await c.rpc('tools/call', { name, arguments: args })).result.content[0].text
+
+/** Run a hook script with a stdin payload, capturing stdout. */
+function runHook(script, payload) {
+  return new Promise((resolve) => {
+    const p = spawn('node', [script], { env: { ...process.env, LOSSLESS_CONTEXT_DIR: ctxDir }, stdio: ['pipe', 'pipe', 'inherit'] })
+    let out = ''
+    p.stdout.on('data', (d) => (out += d))
+    p.on('close', (code) => resolve({ out, code }))
+    p.stdin.write(JSON.stringify(payload))
+    p.stdin.end()
+  })
+}
 
 const main = await connect()
 await handshake(main)
@@ -59,26 +78,62 @@ const noSym = await callRF(main, { path: f, symbol: 'zzz_missing' })
 const missing = await callRF(main, { path: fwd(join(tmp, 'nope.ts')) })
 console.log('6. error paths  -> binary:', bin.err, '| bad-lines:', badLines.err, '| no-symbol:', noSym.err, '| missing-file:', missing.err)
 
-const stats = (await main.rpc('tools/call', { name: 'context_stats', arguments: {} })).result.content[0].text
+const stats = await callTool(main, 'context_stats')
 console.log('7. stats        ->', stats.split('\n')[4].trim())
 
 // Batch working-set read: g.ts is fresh (full), demo.ts should dedup to unchanged.
 const g = fwd(join(tmp, 'g.ts')); writeFileSync(g, 'export const gg = 1\n')
-const batch = (await main.rpc('tools/call', { name: 'read_files', arguments: { paths: [f, g] } })).result.content[0].text
+const batch = await callTool(main, 'read_files', { paths: [f, g] })
 console.log('8. read_files   ->', batch.split('\n')[0])
 
-// Signed context receipt roundtrip + tamper rejection.
-const issued = JSON.parse((await main.rpc('tools/call', { name: 'context_receipt', arguments: { artifact: 'smoke' } })).result.content[0].text)
-const okVerify = JSON.parse((await main.rpc('tools/call', { name: 'verify_context_receipt', arguments: { receipt: issued.receipt, signature: issued.signature } })).result.content[0].text)
-const tampered = JSON.parse((await main.rpc('tools/call', { name: 'verify_context_receipt', arguments: { receipt: { ...issued.receipt, artifact: 'evil' }, signature: issued.signature } })).result.content[0].text)
-console.log('9. receipt      -> valid:', okVerify.valid, '| tampered rejected:', tampered.valid === false, '| files attested:', issued.receipt.totals.files)
+// --- Flight-recorder loop: sweep hook -> inject hook -> restore -> pack -----------------
+// A fake session transcript in the (empirically observed) shape: the model natively Read
+// g.ts and edited demo.ts. The sweep must archive both; the manifest must rank the edited
+// file first.
+const transcript = fwd(join(tmp, 'session.jsonl'))
+const ts = new Date().toISOString()
+writeFileSync(
+  transcript,
+  [
+    JSON.stringify({ timestamp: ts, message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: g } }] } }),
+    JSON.stringify({ timestamp: ts, toolUseResult: { type: 'text', file: { filePath: g, content: 'export const gg = 1\n', numLines: 1, startLine: 1, totalLines: 1 } } }),
+    JSON.stringify({ timestamp: ts, message: { content: [{ type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: f, old_string: 'a', new_string: 'b' } }] } }),
+  ].join('\n') + '\n',
+)
+const sweep = await runHook('hooks/sweep-transcript.mjs', { hook_event_name: 'PreCompact', trigger: 'auto', session_id: 'smoke-session', transcript_path: transcript })
+const inject = await runHook('hooks/inject-manifest.mjs', { hook_event_name: 'SessionStart', source: 'compact', session_id: 'smoke-session' })
+let injected = ''
+try { injected = JSON.parse(inject.out).hookSpecificOutput.additionalContext } catch {}
+console.log('11. sweep+inject ->', 'sweep exit:', sweep.code, '| injected manifest head:', injected.split('\n')[1]?.trim().slice(0, 60))
+
+const restored = await callTool(main, 'restore_context', {})
+console.log('12. restore      ->', restored.split('\n')[0])
+
+const workingSet = await callTool(main, 'working_set', {})
+console.log('13. working_set  ->', workingSet.split('\n')[0])
+
+const pack = await callTool(main, 'export_pack', { top: 3 })
+console.log('14. export_pack  ->', pack.split('\n')[0])
+
+// Signed context receipt v2: git binding + coverage + sweep attestation + tamper reject.
+const issued = JSON.parse(await callTool(main, 'context_receipt', { artifact: 'smoke', include_sweep: true }))
+const okVerify = JSON.parse(await callTool(main, 'verify_context_receipt', { receipt: issued.receipt, signature: issued.signature }))
+const tampered = JSON.parse(await callTool(main, 'verify_context_receipt', { receipt: { ...issued.receipt, artifact: 'evil' }, signature: issued.signature }))
+console.log(
+  '15. receipt v2   -> valid:', okVerify.valid,
+  '| tampered rejected:', tampered.valid === false,
+  '| version:', issued.receipt.version,
+  '| coverage:', issued.receipt.coverage?.sources.join('+'),
+  '| swept:', (issued.receipt.sweptFiles || []).length,
+  '| blob sha1 bound:', /^[0-9a-f]{40}$/.test(issued.receipt.files[0]?.gitBlobSha1 || ''),
+)
 main.p.stdin.end()
 
 // Oversize path on an isolated server with a tiny cap.
 const tiny = await connect({ LOSSLESS_MAX_BYTES: '5' })
 await handshake(tiny)
 const over = await callRF(tiny, { path: f })
-console.log('10. oversize    ->', over.err, over.t.slice(0, 40).replace(/\n/g, ' '))
+console.log('16. oversize     ->', over.err, over.t.slice(0, 40).replace(/\n/g, ' '))
 tiny.p.stdin.end()
 
 const pass =
@@ -86,6 +141,12 @@ const pass =
   /symbol v30/.test(sym.t) && /lines 10-12/.test(rng.t) &&
   bin.err && /binary/i.test(bin.t) && badLines.err && noSym.err && missing.err && over.err &&
   /byte-identical|reuse/.test(batch) && /gg = 1/.test(batch) &&
-  okVerify.valid === true && tampered.valid === false
-console.log('\nSMOKE:', pass ? 'PASS (reads + slices + batch + receipts + all error paths + oversize)' : 'FAIL')
+  sweep.code === 0 && injected.includes(f) && injected.includes('restore_context') &&
+  restored.includes('restore:') && new RegExp(f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(restored) &&
+  workingSet.includes('working set') &&
+  pack.includes('context pack') && pack.includes('system prompt') &&
+  okVerify.valid === true && tampered.valid === false &&
+  issued.receipt.version === 2 && issued.receipt.coverage.sources.includes('transcript-sweep') &&
+  (issued.receipt.sweptFiles || []).length >= 1
+console.log('\nSMOKE:', pass ? 'PASS (reads + slices + batch + flight-recorder loop + receipts v2 + all error paths + oversize)' : 'FAIL')
 process.exit(pass ? 0 : 1)

@@ -69,6 +69,30 @@ The contract is small. Given an ordered sequence of reads `(path, view, content)
 `bench/run.ts` (scripted workloads) and `bench/real-session.ts` (transcript replay) are both
 < 120 lines and MIT — fork the adapter, swap the engine call for your tool, publish the table.
 
+## Cross-agent numbers (packs) — measured externally, not yet reproducible from this repo
+
+The fan-out numbers quoted in the README come from a separate research program run against
+one user's real Claude Code corpus, **not** from a harness shipped in `bench/`. Stated
+precisely so they can be believed at the right strength:
+
+- **19.6% cross-agent read overlap** — 5,183,174 of 26,444,119 subagent `Read` tokens across
+  195 real multi-agent runs (3,148 subagent transcripts) were reads of *identical content*
+  (grouped by `path + content-hash`) already read by a sibling agent in the same run.
+  Same-agent re-reads were excluded. Token counting: chars/4, applied uniformly.
+- **46.55% cheaper** — one real review fan-out, run twice (baseline vs. a context pack
+  embedded in the reviewer agent-type's system prompt): 131,762.8 vs 246,498.1
+  billed-equivalent tokens under Anthropic's prompt-cache pricing. The SAME pack injected
+  per-task (user turn, not system prompt) measured 19.6% *worse* than baseline, because
+  every sibling cache-writes it instead of cache-reading it.
+- These are honest single-corpus / single-workload measurements: one user's fan-out habits,
+  one provider's cache pricing. Your overlap depends on how your orchestration re-reads
+  reference files; measure before betting on the number. A replayable public harness for
+  the overlap metric is the natural next addition here — until it ships, treat these as
+  externally measured, directionally strong, not independently reproducible.
+
+`bench/sweep-bench.mjs` (in this repo) measures sweep/manifest performance against any real
+transcript you point it at: `node bench/sweep-bench.mjs <transcript.jsonl>`.
+
 ## The invariant behind the numbers
 
 `npm test` includes a 400-operation randomized sequence (read / edit / re-read / compact) that

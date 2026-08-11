@@ -1,27 +1,47 @@
 #!/usr/bin/env node
-// lossless-context-mcp — a context ledger for agent file reads.
+// lossless-context-mcp — the flight recorder for your agent's context.
 //
-// Reads are provably lossless: the server only withholds or diffs content it can PROVE
-// the model still has (bounded by context epochs via the bundled SessionStart/PreCompact
-// hooks); otherwise it returns full content. On top of that ledger it meters where
-// file-read tokens go (per repo, per file, in dollars) and issues HMAC-signed context
-// receipts — an auditable record of exactly which file versions the model was shown.
+// A persistent, hook-fed ledger of every file version the agent was shown, with three
+// views on top: RESTORE (a compaction can no longer destroy the working set — the sweep
+// hook archives it, the inject hook brings the manifest back, restore_context re-emits
+// it), PACKS (stable hot files rendered once for a fan-out fleet's system prompt so
+// siblings hit the prompt cache instead of re-reading), and RECEIPTS (HMAC-signed,
+// git-bound attestation of exactly which file versions the model saw, with an explicit
+// coverage statement). Reads through the ledger remain provably lossless: the server
+// only withholds or diffs content it can PROVE the model still has (context epochs via
+// the bundled hooks); otherwise full content.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { readFileSync, statSync } from 'node:fs'
 import { encode } from 'gpt-tokenizer'
-import { LosslessEngine, type ReadResult } from './engine.js'
+import { LosslessEngine, hashContent, type ReadResult } from './engine.js'
 import { getEpoch } from './sentinel.js'
 import { outlineOf, renderOutline } from './outline.js'
 import { looksBinary, findSymbol, sliceLines } from './slice.js'
-import { ContextMeter, usd } from './meter.js'
+import { ContextMeter, repoRootOf, usd } from './meter.js'
 import { buildContextReceipt, receiptKey, signReceipt, verifyReceipt, type ContextReceipt } from './receipt.js'
 import { SingleSessionGuard } from './session-guard.js'
+import { Archive, approxTokens, isExcluded } from './archive.js'
+import { gitBlobSha1 } from './gitid.js'
+import { loadManifest, renderManifest, MANIFEST_TOP_K } from './restore.js'
+import { buildPack, renderPack } from './pack.js'
 
 const engine = new LosslessEngine()
 const meter = new ContextMeter()
+// The flight-recorder substrate. Archive failures must never break a read: every archive
+// call on the hot path is wrapped, and a broken disk degrades the product to v1.2 behavior.
+let archive: Archive | null = null
+try {
+  archive = new Archive()
+  archive.enforceBudget()
+} catch (e) {
+  process.stderr.write(`[lossless-context] archive disabled: ${(e as Error).message}\n`)
+}
+// The MCP server cannot learn the harness session id (not exposed to MCP processes);
+// this pseudo-id groups this process's events. Hook-side sweeps use the real session id.
+const SERVER_SESSION = `mcp-${process.pid}-${Date.now().toString(36)}`
 // See session-guard.ts: this process is single-session by construction (stdio transport +
 // SDK connect() guard). Claim it explicitly so a violated invariant fails loud, not silent.
 const sessionGuard = new SingleSessionGuard()
@@ -101,6 +121,8 @@ function readOne(path: string, opts: ReadOpts): { text: string; isError: boolean
   // Honest accounting: baseline = the resolved view's content (what we'd send without
   // dedup); sent = what we actually sent. This measures ONLY the lossless dedup/diff win.
   const body = r.kind === 'full' ? r.content! : r.kind === 'diff' ? r.patch! : (r.note ?? '')
+  const excluded = isExcluded(path)
+  const blobSha1 = view === 'full' && !excluded ? gitBlobSha1(viewContent) : undefined
   meter.record({
     path: r.path,
     view: r.view,
@@ -108,14 +130,38 @@ function readOne(path: string, opts: ReadOpts): { text: string; isError: boolean
     epoch: r.epoch,
     hash: r.hash,
     baseHash: r.baseHash,
+    gitBlobSha1: blobSha1,
     bytes: r.bytes,
     baselineTokens: encode(viewContent).length,
     sentTokens: encode(body).length,
   })
+  // Flight recorder: archive the exact version shown (full views only; slices are views
+  // over the same bytes). Never let archive trouble break the read itself. Excluded
+  // (secret-pattern) paths leave only path + counts on disk — no content-derived metadata.
+  if (archive && view === 'full') {
+    try {
+      if (!excluded) archive.putBlob(viewContent, r.hash)
+      archive.record({
+        session: SERVER_SESSION,
+        path: r.path,
+        repo: repoRootOf(r.path),
+        hash: excluded ? '' : r.hash,
+        gitBlobSha1: blobSha1,
+        bytes: excluded ? 0 : r.bytes,
+        approxTokens: excluded ? 0 : approxTokens(viewContent),
+        source: 'mcp',
+        op: 'read',
+        view: r.view,
+        excluded: excluded || undefined,
+      })
+    } catch (e) {
+      logErr(`archive write failed for ${path}: ${(e as Error).message}`)
+    }
+  }
   return { text: render(r, label), isError: false }
 }
 
-const server = new McpServer({ name: 'lossless-context', version: '1.1.0' })
+const server = new McpServer({ name: 'lossless-context', version: '1.3.0' })
 
 server.tool(
   'read_file',
@@ -215,17 +261,195 @@ server.tool(
 )
 
 server.tool(
+  'working_set',
+  'What has this session been working on? A heat-ranked table of the files the flight ' +
+    'recorder knows about — from this server\'s own reads plus any transcript sweeps the ' +
+    'hooks performed (last 24h) — with sizes, touch counts, and staleness vs current disk ' +
+    'state. Use after a compaction to see what is recoverable, or anytime for orientation.',
+  {
+    limit: z.number().int().min(1).max(50).optional().describe('Max files to list (default 15).'),
+  },
+  async ({ limit }) => {
+    const n = limit ?? 15
+    const rows = new Map<string, { path: string; touches: number; approxTokens: number; hash: string; sources: Set<string>; lastTs: string }>()
+    const manifest = loadManifest()
+    if (manifest) {
+      for (const e of manifest.entries) {
+        rows.set(e.path, { path: e.path, touches: e.reads + e.edits, approxTokens: e.approxTokens, hash: e.hash, sources: new Set(['sweep']), lastTs: manifest.ts })
+      }
+    }
+    if (archive) {
+      try {
+        for (const e of archive.readEvents({ sinceMs: Date.now() - 24 * 3600_000 })) {
+          let r = rows.get(e.path)
+          if (!r) {
+            r = { path: e.path, touches: 0, approxTokens: e.approxTokens, hash: e.hash, sources: new Set(), lastTs: e.ts }
+            rows.set(e.path, r)
+          }
+          r.touches++
+          r.sources.add(e.source)
+          if (e.ts > r.lastTs) {
+            r.lastTs = e.ts
+            r.hash = e.hash
+            r.approxTokens = e.approxTokens
+          }
+        }
+      } catch (e) {
+        logErr(`working_set: archive read failed: ${(e as Error).message}`)
+      }
+    }
+    if (rows.size === 0)
+      return text(
+        '[lossless-context] the flight recorder has no session history yet. Reads through ' +
+          'read_file/read_files are recorded automatically; native-tool activity is captured ' +
+          'when the sweep hooks are installed (see README).',
+      )
+    const ranked = [...rows.values()].sort((a, b) => b.touches - a.touches || (a.lastTs < b.lastTs ? 1 : -1)).slice(0, n)
+    const lines = ranked.map((r) => {
+      let stale = 'missing on disk'
+      if (!r.hash) {
+        stale = 'not archived (secret-pattern)'
+      } else {
+        try {
+          const cur = hashContent(readFileSync(r.path, 'utf8'))
+          stale = cur === r.hash ? 'current' : 'CHANGED on disk since last seen'
+        } catch {}
+      }
+      return `  ${r.path}  ~${r.approxTokens} tok, ${r.touches} touch(es), [${[...r.sources].join('+')}], ${stale}`
+    })
+    return text(`[lossless-context] working set (${ranked.length} of ${rows.size} known files):\n` + lines.join('\n'))
+  },
+)
+
+server.tool(
+  'restore_context',
+  'Re-emit the working set after a compaction (or /clear) destroyed it. Serves CURRENT ' +
+    'disk content of the requested files — by default the top of the pre-compaction ' +
+    'manifest the sweep hook wrote — through the lossless ledger, annotating any file that ' +
+    'changed since the model last saw it. Budget-capped so a restore cannot blow the fresh ' +
+    'context; files over budget are listed, not silently dropped.',
+  {
+    files: z.array(z.string()).min(1).max(50).optional().describe('Specific files to restore (default: the manifest working set).'),
+    budget_tokens: z.number().int().min(500).optional().describe('Approx token budget for restored content (default 25000).'),
+  },
+  async ({ files, budget_tokens }) => {
+    const budget = budget_tokens ?? 25_000
+    let targets: { path: string; lastHash?: string }[]
+    if (files && files.length > 0) {
+      targets = files.map((p) => ({ path: p }))
+    } else {
+      const manifest = loadManifest()
+      if (!manifest || manifest.entries.length === 0)
+        return text(
+          '[lossless-context] nothing to restore: no working-set manifest found (the sweep ' +
+            'hook writes one at PreCompact/SessionEnd — see README for hook setup). Pass ' +
+            '`files` explicitly to restore specific paths.',
+          true,
+        )
+      targets = manifest.entries.slice(0, MANIFEST_TOP_K).map((e) => ({ path: e.path, lastHash: e.hash }))
+    }
+    const parts: string[] = []
+    const overBudget: string[] = []
+    let spent = 0
+    let errors = 0
+    for (const t of targets) {
+      let content: string
+      try {
+        const st = statSync(t.path)
+        if (st.size > MAX_BYTES) {
+          parts.push(`[lossless-context] ${t.path}: too large to restore here; use native Read with offset/limit.`)
+          errors++
+          continue
+        }
+        const buf = readFileSync(t.path)
+        if (looksBinary(buf)) {
+          parts.push(`[lossless-context] ${t.path}: binary content; use native Read.`)
+          errors++
+          continue
+        }
+        content = buf.toString('utf8')
+      } catch (e) {
+        parts.push(`[lossless-context] ${t.path}: cannot restore — ${(e as Error).message}`)
+        errors++
+        continue
+      }
+      const tok = approxTokens(content)
+      if (spent + tok > budget) {
+        overBudget.push(`${t.path} (~${tok} tok)`)
+        continue
+      }
+      spent += tok
+      const changed = t.lastHash && hashContent(content) !== t.lastHash ? ' [NOTE: changed on disk since you last saw it]' : ''
+      const r = readOne(t.path, { force_full: false })
+      parts.push(changed && !r.isError ? r.text.replace('\n', changed + '\n') : r.text)
+      if (r.isError) errors++
+    }
+    const head =
+      `[lossless-context] restore: ${parts.length} file(s), ~${spent} tokens` +
+      (overBudget.length ? `; NOT restored (over ~${budget} token budget): ${overBudget.join(', ')} — call again with just those files or a higher budget_tokens` : '') +
+      '\n'
+    return text(head + '\n' + parts.join('\n\n---\n\n'), errors > 0 && parts.length === errors)
+  },
+)
+
+server.tool(
+  'export_pack',
+  'Build a fan-out context pack: the stable, hot files (ranked across sessions from the ' +
+    'flight-recorder history) rendered as one deterministic block to embed VERBATIM in a ' +
+    'custom agent-type\'s SYSTEM PROMPT. Siblings in a fan-out then hit the prompt cache on ' +
+    'that shared prefix instead of each re-reading the same files (measured on a real ' +
+    'review fan-out: 46.55% cheaper; per-task injection measured WORSE — see README). ' +
+    'Files matching secret patterns are never packed.',
+  {
+    repo: z.string().optional().describe('Only pack files from this repo root.'),
+    top: z.number().int().min(1).max(30).optional().describe('Max files in the pack (default 8).'),
+    budget_tokens: z.number().int().min(1000).optional().describe('Approx token ceiling for the pack (default 30000).'),
+    days: z.number().int().min(1).max(90).optional().describe('History window for ranking (default 14).'),
+  },
+  async ({ repo, top, budget_tokens, days }) => {
+    if (!archive) return text('[lossless-context] archive unavailable; cannot build a pack.', true)
+    try {
+      const pack = buildPack(archive, { repo, top, budgetTokens: budget_tokens, days })
+      if (pack.files.length === 0)
+        return text(
+          '[lossless-context] no pack candidates: the archive has no (non-excluded) read ' +
+            'history in the window. Read files through this server or install the sweep hooks, ' +
+            'then try again.',
+          true,
+        )
+      return text(renderPack(pack))
+    } catch (e) {
+      return text(`[lossless-context] pack build failed: ${(e as Error).message}`, true)
+    }
+  },
+)
+
+server.tool(
   'context_receipt',
-  'Issue an HMAC-SHA256-signed context receipt for this session: every file/view the model ' +
-    'was shown, the SHA-256 of each content version, how it was delivered (full/diff/' +
-    'unchanged), and token totals. The auditable answer to "what did the AI see when it did ' +
+  'Issue an HMAC-SHA256-signed context receipt: every file/view the model was shown via ' +
+    'this ledger, the SHA-256 of each content version, git binding (blob SHA-1 per version, ' +
+    'repo HEAD at issue time), delivery kinds, token totals, and an explicit coverage ' +
+    'statement. With include_sweep, also attests native-tool reads captured by the ' +
+    'transcript-sweep hooks. The auditable answer to "what did the AI see when it did ' +
     'this?". Signs with LOSSLESS_RECEIPT_KEY or the shared trust key file, so it verifies ' +
     'with the same key as trust-mcp receipts. Verify later with verify_context_receipt.',
   {
     artifact: z.string().describe('What this context evidence is for (repo, ticket, deploy, session id).'),
+    include_sweep: z
+      .boolean()
+      .optional()
+      .describe('Also attest files captured by transcript sweeps in the last 24h (source: sweep).'),
   },
-  async ({ artifact }) => {
-    const receipt = buildContextReceipt(meter.events, artifact)
+  async ({ artifact, include_sweep }) => {
+    let sweepEvents
+    if (include_sweep && archive) {
+      try {
+        sweepEvents = archive.readEvents({ sinceMs: Date.now() - 24 * 3600_000 }).filter((e) => e.source === 'sweep')
+      } catch (e) {
+        logErr(`context_receipt: sweep events unavailable: ${(e as Error).message}`)
+      }
+    }
+    const receipt = buildContextReceipt(meter.events, artifact, new Date(), { sweepEvents })
     const { key, source } = receiptKey()
     return text(JSON.stringify({ receipt, signature: signReceipt(receipt, key), algorithm: 'HMAC-SHA256', key_source: source }, null, 2))
   },
