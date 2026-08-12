@@ -10,7 +10,8 @@
     "dist",
     "hooks",
     "README.md",
-    "BENCHMARK.md"
+    "BENCHMARK.md",
+    "bench/sweep-bench.mjs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

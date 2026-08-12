@@ -57,8 +57,10 @@ describe('updateSeenFromLine', () => {
     expect(seen[Object.keys(seen).find((k) => k.endsWith('e.ts'))!].hash).toBeUndefined()
     expect(seen[Object.keys(seen).find((k) => k.endsWith('w.ts'))!].hash).toBe(hashContent('new stuff'))
   })
-  it('marks files from this server\'s own tool_result renders (heals restore_context default)', () => {
+  it('marks files from this server\'s own tool_result renders — EXACT wire format (review finding: first render is on line 2 after the header)', () => {
     const seen: Record<string, SeenEntry> = {}
+    // Byte-exact shape of restore_context/read_files output: header line ends with \n,
+    // first file render follows immediately, later parts separated by \n\n---\n\n.
     const restoreText =
       '[lossless-context] restore: 2 file(s), ~500 tokens\n' +
       '[lossless-context] /x/first.ts — full content (100 bytes):\ncontents here' +
@@ -70,6 +72,18 @@ describe('updateSeenFromLine', () => {
     }))
     expect(Object.keys(seen).some((k) => k.endsWith('first.ts'))).toBe(true)
     expect(Object.keys(seen).some((k) => k.endsWith('second.ts'))).toBe(true)
+  })
+  it('tolerates the blank-line variant (header, blank, render on line 3)', () => {
+    const seen: Record<string, SeenEntry> = {}
+    const withBlank =
+      '[lossless-context] working set: 1 file(s), 0 error(s)\n' +
+      '\n' +
+      '[lossless-context] /x/third.ts — full content (10 bytes):\nabc'
+    updateSeenFromLine(seen, JSON.stringify({
+      timestamp: ts(),
+      message: { content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'text', text: withBlank }] }] },
+    }))
+    expect(Object.keys(seen).some((k) => k.endsWith('third.ts'))).toBe(true)
   })
   it('marks lossless-context MCP tool inputs (path, paths, files)', () => {
     const seen: Record<string, SeenEntry> = {}
@@ -143,6 +157,27 @@ describe('decideEdit', () => {
   it('fails open on drift when no comparable hash exists (post-edit, partial reads)', () => {
     expect(decideEdit('Edit', '/x/f.ts', seenAt(120_000, undefined), T0, disk(hashContent('whatever'))).allow).toBe(true)
     expect(decideEdit('Edit', '/x/f.ts', seenAt(120_000, hashContent('v')), T0, disk(undefined)).allow).toBe(true)
+  })
+})
+
+describe('session-scoped guard epoch (integration review #3: no cross-session false-deny storms)', () => {
+  it('markSessionEpoch persists per session and does not touch other sessions', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const ctx = mkdtempSync(join(tmpdir(), 'lcm-epoch-'))
+    process.env.LOSSLESS_CONTEXT_DIR = ctx
+    try {
+      const { loadGuardState, markSessionEpoch, saveGuardState } = await import('../src/guard.ts')
+      saveGuardState('session-a', { offset: 0, seen: { '/x/f.ts': { ts: 1000 } } })
+      saveGuardState('session-b', { offset: 0, seen: { '/x/f.ts': { ts: 1000 } } })
+      markSessionEpoch('session-a', 99_999)
+      expect(loadGuardState('session-a').epochMs).toBe(99_999)
+      expect(loadGuardState('session-a').seen['/x/f.ts'].ts).toBe(1000) // seen preserved
+      expect(loadGuardState('session-b').epochMs).toBeUndefined() // untouched — the fix
+    } finally {
+      delete process.env.LOSSLESS_CONTEXT_DIR
+      rmSync(ctx, { recursive: true, force: true })
+    }
   })
 })
 

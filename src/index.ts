@@ -16,7 +16,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { readFileSync, statSync } from 'node:fs'
 import { encode } from 'gpt-tokenizer'
-import { LosslessEngine, hashContent, type ReadResult } from './engine.js'
+import { LosslessEngine, hashContent, normalizeKey, type ReadResult } from './engine.js'
 import { getEpoch } from './sentinel.js'
 import { outlineOf, renderOutline } from './outline.js'
 import { looksBinary, findSymbol, sliceLines } from './slice.js'
@@ -156,14 +156,18 @@ function readOne(path: string, opts: ReadOpts): { text: string; isError: boolean
   const body = r.kind === 'full' ? r.content! : r.kind === 'diff' ? r.patch! : (r.note ?? '')
   const excluded = isExcluded(path)
   const blobSha1 = view === 'full' && !excluded ? gitBlobSha1(viewContent) : undefined
+  // Excluded (secret-pattern) paths: no content-derived metadata in the meter either —
+  // meter events feed SIGNED receipts, and a hash of a low-entropy secret in an
+  // exportable artifact invites offline confirmation attacks.
   meter.record({
     path: r.path,
     view: r.view,
     kind: r.kind,
     epoch: r.epoch,
-    hash: r.hash,
-    baseHash: r.baseHash,
+    hash: excluded ? '' : r.hash,
+    baseHash: excluded ? undefined : r.baseHash,
     gitBlobSha1: blobSha1,
+    excluded: excluded || undefined,
     bytes: r.bytes,
     baselineTokens: encode(viewContent).length,
     sentTokens: encode(body).length,
@@ -241,8 +245,11 @@ server.tool(
       if (r.isError) errors++
       parts.push(r.text)
     }
+    // Header line then the first render on the NEXT line (no blank between): the guard's
+    // tool_result parser reads the first lines of each '---'-separated part, and the
+    // restored/batched files must land inside its window to be marked as seen.
     const head = `[lossless-context] working set: ${paths.length} file(s), ${errors} error(s)\n`
-    return text(head + '\n' + parts.join('\n\n---\n\n'), errors === paths.length)
+    return text(head + parts.join('\n\n---\n\n'), errors === paths.length)
   },
 )
 
@@ -304,20 +311,22 @@ server.tool(
   },
   async ({ limit }) => {
     const n = limit ?? 15
+    // Keyed by normalizeKey like every other path-keyed structure — the same file seen
+    // via backslash and forward-slash spellings must not split into two rows.
     const rows = new Map<string, { path: string; touches: number; approxTokens: number; hash: string; sources: Set<string>; lastTs: string }>()
     const manifest = loadManifest()
     if (manifest) {
       for (const e of manifest.entries) {
-        rows.set(e.path, { path: e.path, touches: e.reads + e.edits, approxTokens: e.approxTokens, hash: e.hash, sources: new Set(['sweep']), lastTs: manifest.ts })
+        rows.set(normalizeKey(e.path), { path: e.path, touches: e.reads + e.edits, approxTokens: e.approxTokens, hash: e.hash, sources: new Set(['sweep']), lastTs: manifest.ts })
       }
     }
     if (archive) {
       try {
         for (const e of archive.readEvents({ sinceMs: Date.now() - 24 * 3600_000 })) {
-          let r = rows.get(e.path)
+          let r = rows.get(normalizeKey(e.path))
           if (!r) {
             r = { path: e.path, touches: 0, approxTokens: e.approxTokens, hash: e.hash, sources: new Set(), lastTs: e.ts }
-            rows.set(e.path, r)
+            rows.set(normalizeKey(e.path), r)
           }
           r.touches++
           r.sources.add(e.source)
@@ -417,11 +426,14 @@ server.tool(
       parts.push(changed && !r.isError ? r.text.replace('\n', changed + '\n') : r.text)
       if (r.isError) errors++
     }
+    // Single newline after the header — the first restored file's render must land inside
+    // the guard's per-part parse window or the guard would deny editing the very file
+    // this tool just restored (the exact recovery flow it exists to protect).
     const head =
       `[lossless-context] restore: ${parts.length} file(s), ~${spent} tokens` +
       (overBudget.length ? `; NOT restored (over ~${budget} token budget): ${overBudget.join(', ')} — call again with just those files or a higher budget_tokens` : '') +
       '\n'
-    return text(head + '\n' + parts.join('\n\n---\n\n'), errors > 0 && parts.length === errors)
+    return text(head + parts.join('\n\n---\n\n'), errors > 0 && parts.length === errors)
   },
 )
 

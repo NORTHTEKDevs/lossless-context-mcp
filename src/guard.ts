@@ -28,6 +28,13 @@ export interface SeenEntry {
 export interface GuardState {
   offset: number
   seen: Record<string, SeenEntry>
+  /** ms timestamp of THIS SESSION's last context-loss event (compaction, /clear).
+   *  Session-scoped on purpose: the machine-global epoch file is bumped by EVERY
+   *  session's start/compaction, so using it here caused false-deny storms for
+   *  concurrent sessions (session A starting made session B's whole seen-state look
+   *  pre-epoch). The global file still serves the dedup ENGINE, where cross-session
+   *  bumps are merely conservative (a full re-send), never wrong. */
+  epochMs?: number
 }
 
 export const GUARDED_TOOLS = new Set(['Edit', 'MultiEdit', 'Write'])
@@ -104,11 +111,12 @@ export function updateSeenFromLine(seen: Record<string, SeenEntry>, line: string
         for (const t of texts) {
           if (!t.startsWith('[lossless-context]')) continue
           for (const part of t.split(BATCH_SEPARATOR)) {
-            // A batch/restore part may carry the collection header on line 1 and the
-            // file render on line 2 — check both. (Bounded to two lines so embedded
-            // file CONTENT can't spray fake seen-marks; a crafted first content line
-            // could still fake one, which errs fail-open, not fail-closed.)
-            for (const lineText of part.split('\n', 2)) {
+            // A batch/restore part may carry a collection header (and, in older wire
+            // formats, a blank line) before the file render — scan the first THREE
+            // lines. (Bounded so embedded file CONTENT can't spray fake seen-marks; a
+            // crafted early content line could still fake one, which errs fail-open,
+            // not fail-closed.)
+            for (const lineText of part.split('\n', 3)) {
               const m = LOSSLESS_RENDER_HEAD.exec(lineText)
               if (m) mark(m[1])
             }
@@ -211,6 +219,15 @@ export function loadGuardState(sessionId: string): GuardState {
     if (typeof s.offset === 'number' && s.seen && typeof s.seen === 'object') return s
   } catch {}
   return { offset: 0, seen: {} }
+}
+
+/** Record a context-loss moment (compaction, /clear) for ONE session's guard state.
+ *  Called by the hooks that witness the event; the guard then requires re-reads only
+ *  for content THIS session actually lost. */
+export function markSessionEpoch(sessionId: string, now = Date.now()): void {
+  const state = loadGuardState(sessionId)
+  state.epochMs = now
+  saveGuardState(sessionId, state)
 }
 
 const SEEN_CAP = Number(process.env.LOSSLESS_GUARD_SEEN_CAP || 5000)

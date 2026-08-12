@@ -109,6 +109,20 @@ console.log('11. sweep+inject ->', 'sweep exit:', sweep.code, '| injected manife
 const restored = await callTool(main, 'restore_context', {})
 console.log('12. restore      ->', restored.split('\n')[0])
 
+// THE recovery loop closure (integration review #2): a fresh session that ONLY has the
+// restore_context result in its transcript must be allowed to edit the restored file —
+// the guard must parse our own render out of the tool_result.
+const restoreTranscript = fwd(join(tmp, 'restore-session.jsonl'))
+writeFileSync(restoreTranscript, JSON.stringify({
+  timestamp: new Date().toISOString(),
+  message: { content: [{ type: 'tool_result', tool_use_id: 'r1', content: [{ type: 'text', text: restored }] }] },
+}) + '\n')
+const editAfterRestore = await runHook('hooks/guard-edit.mjs', {
+  hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: f },
+  session_id: 'smoke-restore', transcript_path: restoreTranscript,
+})
+console.log('12b. restore->edit ->', editAfterRestore.out === '' ? 'ALLOWED (guard parsed the restore render)' : 'DENIED — recovery loop broken')
+
 const workingSet = await callTool(main, 'working_set', {})
 console.log('13. working_set  ->', workingSet.split('\n')[0])
 
@@ -144,9 +158,9 @@ console.log('15. guard        -> unread edit:', deniedDecision, '| after read: '
 const { mkdirSync } = await import('node:fs')
 const presDir = join(ctxDir, 'presence')
 mkdirSync(presDir, { recursive: true })
-// Pin the epoch well into the past: the sweep step bumped it moments ago, which would
-// make the "-30s read" below look pre-epoch and trip never-seen before coordination.
-writeFileSync(join(ctxDir, 'epoch'), String(Date.now() - 3600_000))
+// NOTE: no epoch pinning needed anymore — the guard's epoch is SESSION-scoped now, so
+// the sweep step's global bump (a different session) cannot make this session's reads
+// look pre-epoch. That was integration-review finding #3; this smoke proves the fix.
 const otherPresence = (rec) =>
   writeFileSync(join(presDir, 'other-sess__main.json'), JSON.stringify({ sid: 'other-sess', agent: 'main', pid: 424242, updatedAt: Date.now(), intents: [], edits: [], ...rec }))
 
@@ -234,6 +248,7 @@ const pass =
   /byte-identical|reuse/.test(batch) && /gg = 1/.test(batch) &&
   sweep.code === 0 && injected.includes(f) && injected.includes('restore_context') &&
   restored.includes('restore:') && new RegExp(f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(restored) &&
+  editAfterRestore.out === '' && editAfterRestore.code === 0 &&
   workingSet.includes('working set') &&
   pack.includes('context pack') && pack.includes('system prompt') &&
   deniedDecision === 'deny' && allowed.out === '' && denied.code === 0 && allowed.code === 0 &&

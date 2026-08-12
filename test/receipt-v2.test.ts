@@ -72,6 +72,33 @@ describe('receipt v2', () => {
   })
 })
 
+describe('excluded paths in receipts (integration review CRITICAL #1)', () => {
+  it('never carries content hashes for secret-pattern reads — attests the read only', () => {
+    const events = [
+      meterEvent({ path: '/proj/.env', repo: '/proj', hash: '', gitBlobSha1: undefined, excluded: true }),
+      meterEvent({ path: '/proj/.env', repo: '/proj', hash: '', gitBlobSha1: undefined, excluded: true, kind: 'unchanged' }),
+    ]
+    const r = buildContextReceipt(events, 'a')
+    expect(r.files).toHaveLength(1)
+    expect(r.files[0].excluded).toBe(true)
+    expect(r.files[0].finalHash).toBe('')
+    expect(r.files[0].hashesSeen).toEqual([])
+    expect(r.files[0].gitBlobSha1).toBeUndefined()
+    expect(r.files[0].reads).toBe(2) // the READ is attested; the content identity is not
+    expect(JSON.stringify(r)).not.toContain('aa'.repeat(32))
+  })
+  it('an excluded key never re-attaches content identity from a later event', () => {
+    const events = [
+      meterEvent({ path: '/proj/.env', hash: '', excluded: true }),
+      meterEvent({ path: '/proj/.env', hash: 'cc'.repeat(32) }), // hypothetical config change mid-session
+    ]
+    const r = buildContextReceipt(events, 'a')
+    expect(r.files[0].excluded).toBe(true)
+    expect(r.files[0].finalHash).toBe('')
+    expect(r.files[0].hashesSeen).toEqual([])
+  })
+})
+
 describe('stableStringify undefined semantics (must mirror JSON.stringify)', () => {
   it('drops undefined object keys and nulls undefined array items', () => {
     expect(stableStringify({ a: 1, b: undefined })).toBe('{"a":1}')

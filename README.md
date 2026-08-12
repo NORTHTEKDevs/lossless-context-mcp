@@ -83,9 +83,13 @@ per session, what each agent holds and edits. v2 makes that knowledge active:
 Honest limits: advisory, not locking. Sessions without the hooks are invisible, a
 same-second race can still slip through, and presence files are unauthenticated local
 JSON — any local process could fabricate one to cause false *denies* (structurally never
-a false allow; presence can only add deny classes). It substantially narrows the
-concurrent-clobber window; it cannot close it, and how much it catches in practice is
-not yet measured. `LOSSLESS_COORD=off` disables coordination independently of the guard.
+a false allow; presence can only add deny classes). An intent whose edit is then declined
+at the permission prompt lingers up to `LOSSLESS_COORD_INTENT_SECS` (90 s) before
+expiring. It substantially narrows the concurrent-clobber window; it cannot close it, and
+how much it catches in practice is not yet measured. `LOSSLESS_COORD=off` disables
+coordination independently of the guard. (The guard's compaction tracking is
+session-scoped; only the dedup engine uses the machine-global epoch file, where a
+cross-session bump merely costs one conservative full re-send.)
 
 ## 4. Packs: stop paying for the same files in every subagent
 
@@ -217,8 +221,10 @@ equals disk truth after every operation. Anything less provable is sent in full.
 
 ## Status
 
-**v1.3.0** — the flight recorder: persistent content-addressed archive, transcript sweep
-+ manifest inject hooks, `working_set` / `restore_context` / `export_pack`, receipts v2
-(git blob SHA-1 + repo HEAD binding, coverage disclosure, sweep attestation). 71 tests
-green including the losslessness invariant; over-the-wire smoke covers the full
-sweep → inject → restore loop; real-transcript sweep validated (14 MB in 361 ms). MIT.
+**v2.0.0** — the coordination plane, on top of the full flight recorder: persistent
+content-addressed archive, transcript sweep + manifest inject hooks, working-set
+restore, fan-out packs, git-bound receipts v2, one-command `init`, the blind-edit
+guard, context blame, and cross-agent coordination (in-flight intents, landed-edit
+conflicts, the `coordination_status` radar). 121 tests green including the losslessness
+invariant; over-the-wire smoke covers sweep → inject → restore → guard → coordination →
+receipts; real-transcript sweep and guard runs validated on live data. MIT.

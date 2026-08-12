@@ -66,8 +66,10 @@ try {
     }
   } catch {}
 
-  // 1-2: single-session rules (never-seen/epoch, drift) — the authority.
-  let d = guard.decideEdit(toolName, filePath, state.seen, guard.readEpochMs(), disk)
+  // 1-2: single-session rules (never-seen/epoch, drift) — the authority. The epoch here
+  // is SESSION-scoped (set by this session's own PreCompact/clear), never the global
+  // file, which other sessions bump.
+  let d = guard.decideEdit(toolName, filePath, state.seen, state.epochMs ?? 0, disk)
 
   if (presence && own) {
     try {

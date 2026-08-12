@@ -23,13 +23,17 @@ export interface FileAttestation {
   view: string
   reads: number
   kinds: { full: number; diff: number; unchanged: number }
-  /** SHA-256 of the content version the model holds after its last read. */
+  /** SHA-256 of the content version the model holds after its last read.
+   *  EMPTY for excluded (secret-pattern) paths — the receipt attests THAT the file was
+   *  shown, but never carries content-derived metadata for secrets. */
   finalHash: string
   /** Every distinct content version the model was shown, in first-seen order. */
   hashesSeen: string[]
   /** Git blob SHA-1 of the final version — lets a verifier with a clone run
    *  `git cat-file -e <sha1>` to check whether that exact version was ever committed. */
   gitBlobSha1?: string
+  /** Secret-pattern path: hash fields intentionally withheld. */
+  excluded?: boolean
 }
 
 /** v2: files observed via transcript sweep (native Read/Edit), attested separately from
@@ -116,6 +120,15 @@ export function buildContextReceipt(
     }
     f.reads++
     f.kinds[e.kind]++
+    if (e.excluded || !e.hash) {
+      // Secret-pattern path: attest the read happened, never the content identity.
+      f.excluded = true
+      f.finalHash = ''
+      f.hashesSeen = []
+      f.gitBlobSha1 = undefined
+      continue
+    }
+    if (f.excluded) continue // once excluded, never re-attach content identity
     f.finalHash = e.hash
     if (e.gitBlobSha1) f.gitBlobSha1 = e.gitBlobSha1
     if (!f.hashesSeen.includes(e.hash)) f.hashesSeen.push(e.hash)

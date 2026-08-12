@@ -42,6 +42,15 @@ try {
   const { sweepTranscript } = await import(distUrl('sweep.js'))
   const { writeManifest } = await import(distUrl('restore.js'))
 
+  // A compaction is a context-loss moment for THIS session: record it in the session's
+  // guard state so the blind-edit guard requires re-reads for pre-compaction content.
+  if (payload.hook_event_name === 'PreCompact') {
+    try {
+      const { markSessionEpoch } = await import(distUrl('guard.js'))
+      markSessionEpoch(session)
+    } catch {}
+  }
+
   const archive = new Archive(undefined, `sweep-${process.pid}-${Date.now().toString(36)}`)
   const { stats, workingSet } = await sweepTranscript(transcriptPath, archive, { session })
   if (workingSet.length > 0) writeManifest(session, workingSet)

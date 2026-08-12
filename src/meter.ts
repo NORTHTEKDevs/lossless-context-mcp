@@ -19,10 +19,13 @@ export interface MeterEvent {
   view: string
   kind: 'full' | 'diff' | 'unchanged'
   epoch: number
-  hash: string // SHA-256 of current view content — what the model now holds
+  hash: string // SHA-256 of current view content — what the model now holds. EMPTY for excluded paths.
   baseHash?: string
   /** Git blob SHA-1 of the view content (full-file views) — receipt git binding. */
   gitBlobSha1?: string
+  /** Secret-pattern path: content-derived metadata (hashes) is withheld from this event
+   *  so it can never reach a signed, exportable receipt. */
+  excluded?: boolean
   bytes: number
   baselineTokens: number
   sentTokens: number
