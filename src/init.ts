@@ -34,10 +34,11 @@ export function desiredHooks(pkgRoot: string): { event: string; matcher?: string
     { event: 'SessionStart', matcher: 'compact', script: p('inject-manifest.mjs'), timeout: 15 },
     { event: 'SessionStart', script: p('reset-epoch.mjs'), timeout: 15 },
     { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit', script: p('guard-edit.mjs'), timeout: 20 },
+    { event: 'PostToolUse', matcher: 'Edit|Write|MultiEdit', script: p('publish-edit.mjs'), timeout: 15 },
   ]
 }
 
-const OURS = /lossless-context-mcp[\\/]hooks[\\/](sweep-transcript|inject-manifest|reset-epoch|guard-edit)\.mjs/
+const OURS = /lossless-context-mcp[\\/]hooks[\\/](sweep-transcript|inject-manifest|reset-epoch|guard-edit|publish-edit)\.mjs/
 
 /** Pure merge: returns the new hooks config + a change list. Never removes non-ours entries. */
 export function mergeHooks(

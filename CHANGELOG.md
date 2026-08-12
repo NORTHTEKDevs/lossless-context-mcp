@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 — the coordination plane
+
+No breaking changes; the major marks the capability-class change: the flight recorder
+becomes ACTIVE coordination infrastructure for concurrent agents on one machine.
+
+- **Presence plane** (`~/.lossless-context/presence/`, one file per agent process, no
+  daemon, no locks): guard-allowed edits publish an intent BEFORE executing; landed
+  guarded-tool edits (parsed from transcript results) publish afterward. Self-pruning,
+  bounded, atomic writes.
+- **Cross-agent conflict denial**, layered under the single-session rules and equally
+  fail-open: (C2) another process — including a sibling subagent of the same session —
+  has an edit in flight on this file (< LOSSLESS_COORD_INTENT_SECS, default 90s);
+  (C1) another session's landed edit postdates your hashless last contact. Both denials
+  name the culprit session and age; drift denials gain the same attribution.
+- **`coordination_status`** — the radar: visible sessions, edit activity, cross-session
+  and in-flight files.
+- `LOSSLESS_COORD=off` disables coordination independently of the guard. Honest limits
+  documented: advisory, hook-less sessions invisible, same-second races possible.
+- Tests 103 → 114; smoke simulates a two-process conflict end-to-end (in-flight deny +
+  landed-edit deny, culprit named, radar renders both sessions).
+
 ## 1.4.0 — init, the blind-edit guard, and context blame
 
 - **`lossless-context-mcp init`** — one-command hook installation into

@@ -17,12 +17,14 @@ afterEach(() => {
 describe('mergeHooks', () => {
   const pkgRoot = 'C:/fake/lossless-context-mcp'
 
-  it('wires all five hook entries into empty settings', () => {
+  it('wires all six hook entries into empty settings', () => {
     const { hooks, changes } = mergeHooks(undefined, pkgRoot)
     expect(hooks.PreCompact).toHaveLength(1)
     expect(hooks.SessionEnd).toHaveLength(1)
     expect(hooks.SessionStart).toHaveLength(2) // compact-matched inject + unmatched reset
     expect(hooks.PreToolUse?.[0].matcher).toBe('Edit|Write|MultiEdit')
+    expect(hooks.PostToolUse?.[0].matcher).toBe('Edit|Write|MultiEdit')
+    expect(JSON.stringify(hooks.PostToolUse)).toContain('publish-edit.mjs')
     expect(changes.filter((c) => c.startsWith('wired:'))).toHaveLength(desiredHooks(pkgRoot).length)
   })
 
@@ -69,7 +71,7 @@ describe('runInit', () => {
   const makePkg = () => {
     const pkgRoot = join(work, 'pkg')
     mkdirSync(join(pkgRoot, 'hooks'), { recursive: true })
-    for (const h of ['sweep-transcript.mjs', 'inject-manifest.mjs', 'reset-epoch.mjs', 'guard-edit.mjs'])
+    for (const h of ['sweep-transcript.mjs', 'inject-manifest.mjs', 'reset-epoch.mjs', 'guard-edit.mjs', 'publish-edit.mjs'])
       writeFileSync(join(pkgRoot, 'hooks', h), '// hook stub')
     return pkgRoot
   }
@@ -79,7 +81,7 @@ describe('runInit', () => {
     const r = runInit({ settingsPath, pkgRoot: makePkg() })
     expect(r.wroteFile).toBe(true)
     const written = JSON.parse(readFileSync(settingsPath, 'utf8'))
-    expect(Object.keys(written.hooks).sort()).toEqual(['PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart'])
+    expect(Object.keys(written.hooks).sort()).toEqual(['PostToolUse', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart'])
   })
 
   it('backs up an existing file and preserves unrelated settings', () => {

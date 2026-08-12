@@ -28,6 +28,7 @@ import { gitBlobSha1 } from './gitid.js'
 import { loadManifest, renderManifest, MANIFEST_TOP_K } from './restore.js'
 import { buildPack, renderPack } from './pack.js'
 import { blameContext, renderBlame } from './blame.js'
+import { intentFreshMs, loadOthers as loadPresence } from './presence.js'
 
 // ---------------------------------------------------------------------------
 // Subcommands (no server startup): `init` wires the hooks, `blame` queries the
@@ -193,7 +194,7 @@ function readOne(path: string, opts: ReadOpts): { text: string; isError: boolean
   return { text: render(r, label), isError: false }
 }
 
-const server = new McpServer({ name: 'lossless-context', version: '1.4.0' })
+const server = new McpServer({ name: 'lossless-context', version: '2.0.0' })
 
 server.tool(
   'read_file',
@@ -452,6 +453,68 @@ server.tool(
       return text(renderPack(pack))
     } catch (e) {
       return text(`[lossless-context] pack build failed: ${(e as Error).message}`, true)
+    }
+  },
+)
+
+server.tool(
+  'coordination_status',
+  'The air-traffic radar for concurrent agents on this machine: which agent processes ' +
+    'are active (from the coordination plane the guard hooks maintain), what they have ' +
+    'been editing, which files have cross-session activity, and where edit conflicts are ' +
+    'brewing. Advisory visibility only — sessions without the hooks installed are invisible.',
+  {},
+  async () => {
+    try {
+      const now = Date.now()
+      const all = loadPresence('', now) // every live logical agent, none excluded
+      if (all.length === 0)
+        return text(
+          '[lossless-context] coordination plane: no active agent processes visible. ' +
+            'Presence appears once the guard hook (lossless-context-mcp init) runs in a session.',
+        )
+      const bySid = new Map<string, { agents: Set<string>; lastMs: number; edits: number; intents: number }>()
+      const byFile = new Map<string, { sids: Set<string>; lastMs: number; inFlight: boolean }>()
+      for (const r of all) {
+        let s = bySid.get(r.sid)
+        if (!s) {
+          s = { agents: new Set(), lastMs: 0, edits: 0, intents: 0 }
+          bySid.set(r.sid, s)
+        }
+        s.agents.add(r.agent)
+        s.lastMs = Math.max(s.lastMs, r.updatedAt)
+        s.edits += r.edits.length
+        s.intents += r.intents.length
+        for (const e of [...r.edits, ...r.intents]) {
+          let f = byFile.get(e.path)
+          if (!f) {
+            f = { sids: new Set(), lastMs: 0, inFlight: false }
+            byFile.set(e.path, f)
+          }
+          f.sids.add(r.sid)
+          f.lastMs = Math.max(f.lastMs, e.ts)
+        }
+        // Same threshold the guard enforces (LOSSLESS_COORD_INTENT_SECS) — never a literal.
+        for (const i of r.intents) if (now - i.ts < intentFreshMs()) byFile.get(i.path)!.inFlight = true
+      }
+      const sessions = [...bySid.entries()]
+        .sort((a, b) => b[1].lastMs - a[1].lastMs)
+        .map(
+          ([sid, s]) =>
+            `  ${sid.slice(0, 8)}  ${s.agents.size} agent(s), ${s.edits} landed edit(s), ${s.intents} intent(s), active ${Math.round((now - s.lastMs) / 60000)}min ago`,
+        )
+      const hot = [...byFile.entries()]
+        .filter(([, f]) => f.sids.size >= 2 || f.inFlight)
+        .sort((a, b) => b[1].lastMs - a[1].lastMs)
+        .slice(0, 12)
+        .map(([p, f]) => `  ${p}  [${f.sids.size} session(s)${f.inFlight ? ', EDIT IN FLIGHT' : ''}]`)
+      return text(
+        `[lossless-context] coordination radar — ${bySid.size} agent session(s) visible\n` +
+          sessions.join('\n') +
+          (hot.length ? `\n\ncross-session / in-flight files:\n${hot.join('\n')}` : '\n\nno cross-session file activity in the window.'),
+      )
+    } catch (e) {
+      return text(`[lossless-context] coordination status failed: ${(e as Error).message}`, true)
     }
   },
 )

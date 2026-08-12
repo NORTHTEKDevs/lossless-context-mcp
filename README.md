@@ -60,7 +60,34 @@ Fail-open by construction: any doubt (unparseable transcript, partial reads, fil
 model itself just edited, oversized files) → the edit proceeds untouched. Disable
 anytime with `LOSSLESS_GUARD=off`.
 
-## 3. Packs: stop paying for the same files in every subagent
+## 3. Coordination: air traffic control for concurrent agents
+
+Run two agent sessions on one repo and they clobber each other blind: B edits a file A
+read ten minutes ago; A edits from its stale copy; the merge is garbage and neither
+notices. Nothing on the market mediates this locally — but the recorder already knows,
+per session, what each agent holds and edits. v2 makes that knowledge active:
+
+- **Edit-in-flight detection** — when one agent process is allowed an edit, it publishes
+  an intent to a local presence plane (`~/.lossless-context/presence/`, one file per
+  process, no daemon, no locks). Another agent editing the same file seconds later is
+  denied with the culprit named: *"agent session 3f2a91b0 started an edit on this file
+  12s ago and it may not have landed yet."* Covers sibling subagents of the same
+  session too.
+- **Cross-session stale-base detection** — when another session's landed edit postdates
+  what your session holds and your last contact left no verifiable hash, the edit is
+  denied with a re-read instruction. When the ordinary drift check fires, the reason now
+  *names who changed the file*.
+- **The radar** — `coordination_status` shows every visible agent session, what it's
+  been editing, and which files have cross-session or in-flight activity.
+
+Honest limits: advisory, not locking. Sessions without the hooks are invisible, a
+same-second race can still slip through, and presence files are unauthenticated local
+JSON — any local process could fabricate one to cause false *denies* (structurally never
+a false allow; presence can only add deny classes). It substantially narrows the
+concurrent-clobber window; it cannot close it, and how much it catches in practice is
+not yet measured. `LOSSLESS_COORD=off` disables coordination independently of the guard.
+
+## 4. Packs: stop paying for the same files in every subagent
 
 Fan-outs are where token waste actually lives. Measured across 195 real multi-agent runs:
 **19.6% of all subagent `Read` tokens were duplicate reads of identical content by sibling
@@ -77,7 +104,7 @@ corpus, not by a harness in this repo — exact figures, method, and that caveat
 [BENCHMARK.md](./BENCHMARK.md). Generate the pack once per run and embed it verbatim:
 ranking follows live read history, so repeated `export_pack` calls can differ.
 
-## 4. Blame: what did the agent see when it did that?
+## 5. Blame: what did the agent see when it did that?
 
 `context_blame` (also a CLI: `lossless-context-mcp blame <path>`) answers the debugging
 question every agent incident report wishes it could: for a given file, every content
@@ -85,7 +112,7 @@ version the model was shown (SHA-256 + git blob SHA-1, first/last seen, capture 
 sessions) and what else was in context around a chosen moment. When an agent produces a
 wrong change, you query the recording instead of arguing with the agent's self-report.
 
-## 5. Receipts: prove what the model saw, bound to git
+## 6. Receipts: prove what the model saw, bound to git
 
 Observability vendors capture what your agent read into mutable trace stores. Nobody
 signs it or binds it to repo identity — and agent self-reports are not evidence (ask
@@ -102,7 +129,7 @@ evidence chain: *what the agent saw + what it did*.
 **The honest scope**: a receipt attests what passed through the ledger and sweeps — it
 never claims coverage of unmediated paths, and says so in its own `coverage.note`.
 
-## 6. Metering (and the token-saver reality check)
+## 7. Metering (and the token-saver reality check)
 
 `context_stats` shows where the session's file-read tokens went — per repo, per file, in
 dollars, counted with a real tokenizer.
@@ -148,6 +175,7 @@ records MCP reads only.
 | `restore_context(files?, budget_tokens?)` | Re-emit the working set after compaction — manifest top-K by default, budget-capped, change-annotated. |
 | `export_pack(repo?, top?, budget_tokens?, days?)` | Deterministic fan-out context pack from cross-session read history, for an agent-type system prompt. |
 | `context_blame(path, at?, window_minutes?)` | Forensics: every version of a file the model was shown, plus co-context around a moment. Also: `lossless-context-mcp blame <path>` from the shell. |
+| `coordination_status()` | The radar: visible agent sessions, their recent edits, cross-session and in-flight files. |
 | `outline(path)` | Cheap structural map of a file (declarations only). |
 | `context_stats()` | Token/dollar breakdown of this session's reads. |
 | `context_receipt(artifact, include_sweep?)` | Signed, git-bound context receipt with explicit coverage. |

@@ -140,6 +140,24 @@ export function readNewLines(transcriptPath: string, offset: number): { lines: s
 export interface Decision {
   allow: boolean
   reason?: string
+  /** Deny class — lets the coordination layer attribute drift denies to a culprit. */
+  kind?: 'never-seen' | 'drift'
+}
+
+/** Extract a landed guarded-tool edit (Edit/Write/MultiEdit RESULT) from a transcript
+ *  line, for publication to the presence plane. Returns null for everything else. */
+export function extractLandedEdit(line: string): { path: string; ts: number; hash?: string } | null {
+  let j: any
+  try {
+    j = JSON.parse(line)
+  } catch {
+    return null
+  }
+  const tur = j?.toolUseResult
+  if (!tur || typeof tur !== 'object' || tur.file || typeof tur.filePath !== 'string') return null
+  const ts = typeof j.timestamp === 'string' ? Date.parse(j.timestamp) : NaN
+  if (Number.isNaN(ts)) return null
+  return { path: tur.filePath, ts, hash: typeof tur.content === 'string' ? hashContent(tur.content) : undefined }
 }
 
 /** The core verdict. Pure given its inputs; every uncertain branch allows. */
@@ -157,6 +175,7 @@ export function decideEdit(
   if (!entry || entry.ts <= epochMs) {
     return {
       allow: false,
+      kind: 'never-seen',
       reason:
         `[lossless-context guard] You have not read ${filePath} in the CURRENT context epoch ` +
         `(your context was compacted/reset since it was last seen, or it was never read). ` +
@@ -167,6 +186,7 @@ export function decideEdit(
   if (entry.hash && disk.hash && disk.hash !== entry.hash) {
     return {
       allow: false,
+      kind: 'drift',
       reason:
         `[lossless-context guard] ${filePath} has CHANGED on disk since the version you read ` +
         `(content hash differs — another agent, the user, or a tool modified it). ` +

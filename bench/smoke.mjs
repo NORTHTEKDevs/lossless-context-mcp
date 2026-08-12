@@ -140,6 +140,52 @@ afs(guardTranscript, JSON.stringify({
 const allowed = await runHook('hooks/guard-edit.mjs', guardPayload())
 console.log('15. guard        -> unread edit:', deniedDecision, '| after read: ', allowed.out === '' ? 'allowed' : 'STILL BLOCKED', '| exit codes:', denied.code, allowed.code)
 
+// --- Coordination plane: two-process conflict simulation --------------------------------
+const { mkdirSync } = await import('node:fs')
+const presDir = join(ctxDir, 'presence')
+mkdirSync(presDir, { recursive: true })
+// Pin the epoch well into the past: the sweep step bumped it moments ago, which would
+// make the "-30s read" below look pre-epoch and trip never-seen before coordination.
+writeFileSync(join(ctxDir, 'epoch'), String(Date.now() - 3600_000))
+const otherPresence = (rec) =>
+  writeFileSync(join(presDir, 'other-sess__main.json'), JSON.stringify({ sid: 'other-sess', agent: 'main', pid: 424242, updatedAt: Date.now(), intents: [], edits: [], ...rec }))
+
+// C2 in-flight: my session read g 30s "ago"; the other process intends an edit 5s ago.
+afs(guardTranscript, JSON.stringify({
+  timestamp: new Date(Date.now() - 30_000).toISOString(),
+  toolUseResult: { type: 'text', file: { filePath: g, content: 'export const gg = 1\n', numLines: 1, startLine: 1, totalLines: 1 } },
+}) + '\n')
+otherPresence({ intents: [{ path: g, ts: Date.now() - 5_000 }] })
+const inflight = await runHook('hooks/guard-edit.mjs', guardPayload({ tool_input: { file_path: g } }))
+let inflightReason = ''
+try { inflightReason = JSON.parse(inflight.out).hookSpecificOutput.permissionDecisionReason } catch {}
+
+// C1 landed: my last contact with g is my own (hashless) edit; the other process landed one after it.
+afs(guardTranscript, JSON.stringify({
+  timestamp: new Date(Date.now() - 10_000).toISOString(),
+  toolUseResult: { filePath: g, oldString: 'a', newString: 'b', structuredPatch: [] },
+}) + '\n')
+otherPresence({ edits: [{ path: g, ts: Date.now() - 2_000 }] })
+const landed = await runHook('hooks/guard-edit.mjs', guardPayload({ tool_input: { file_path: g } }))
+let landedReason = ''
+try { landedReason = JSON.parse(landed.out).hookSpecificOutput.permissionDecisionReason } catch {}
+console.log(
+  '15b. coordination -> in-flight:', /may not have landed/.test(inflightReason) ? 'DENY(in-flight)' : 'MISSED',
+  '| landed:', /AFTER you last saw it/.test(landedReason) ? 'DENY(landed-edit)' : 'MISSED',
+  '| names culprit:', /other-se/.test(inflightReason) && /other-se/.test(landedReason), // sid rendered as slice(0,8)
+)
+const radar = await callTool(main, 'coordination_status', {})
+console.log('15c. radar        ->', radar.split('\n')[0], '|', (radar.split('\n').find((l) => l.includes('other-se')) || '').trim().slice(0, 60))
+
+// PostToolUse publisher: a single-shot agent's landed edit becomes visible immediately.
+const pub = await runHook('hooks/publish-edit.mjs', {
+  hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: f },
+  session_id: 'single-shot-sub', agent_id: 'sub-99', tool_response: {},
+})
+const pubFile = join(presDir, 'single-shot-sub__sub-99.json')
+const pubRecord = JSON.parse(rfs(pubFile, 'utf8'))
+console.log('15d. publish-edit -> exit', pub.code, '| landed edits recorded:', pubRecord.edits.length, '| hashed:', typeof pubRecord.edits[0]?.hash === 'string')
+
 // --- Context blame: MCP tool + CLI ------------------------------------------------------
 const blameOut = await callTool(main, 'context_blame', { path: f })
 console.log('16. blame tool   ->', blameOut.split('\n')[0])
@@ -191,6 +237,9 @@ const pass =
   workingSet.includes('working set') &&
   pack.includes('context pack') && pack.includes('system prompt') &&
   deniedDecision === 'deny' && allowed.out === '' && denied.code === 0 && allowed.code === 0 &&
+  /may not have landed/.test(inflightReason) && /AFTER you last saw it/.test(landedReason) &&
+  /other-se/.test(inflightReason) && radar.includes('coordination radar') && radar.includes('other-se') &&
+  pub.code === 0 && pubRecord.edits.length === 1 && typeof pubRecord.edits[0].hash === 'string' &&
   blameOut.includes('version(s) shown to the model') && blameCli.code === 0 && blameCli.out.includes('blame') &&
   initDry.code === 0 && initDry.out.includes('dry run') &&
   okVerify.valid === true && tampered.valid === false &&
