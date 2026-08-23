@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.NORTHTEKDevs/lossless-context-mcp",
+  "description": "Agent context flight recorder: restore after compaction, fan-out packs, signed git-bound receipts.",
+  "repository": {
+    "url": "https://github.com/NORTHTEKDevs/lossless-context-mcp",
+    "source": "github"
+  },
+  "version": "2.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "lossless-context-mcp",
+      "version": "2.0.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

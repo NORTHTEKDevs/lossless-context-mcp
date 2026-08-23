@@ -1,7 +1,7 @@
 {
   "name": "lossless-context-mcp",
-  "version": "1.0.1",
-  "description": "An MCP server that drastically cuts file-read tokens in agent sessions without sacrificing quality. Withholds or diffs only content it can prove the model still has (epoch-bounded by Claude Code compaction); sends full content otherwise.",
+  "version": "2.0.0",
+  "description": "The flight recorder for your agent context: a persistent ledger of every file version the model was shown - working-set restore after compaction, cache-ready context packs for subagent fan-outs, and git-bound signed receipts.",
   "type": "module",
   "bin": {
     "lossless-context-mcp": "dist/index.js"
@@ -9,7 +9,9 @@
   "files": [
     "dist",
     "hooks",
-    "README.md"
+    "README.md",
+    "BENCHMARK.md",
+    "bench/sweep-bench.mjs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -45,16 +47,16 @@
   },
   "homepage": "https://github.com/NORTHTEKDevs/lossless-context-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^8.0.3",
     "gpt-tokenizer": "^2.8.1",
-    "zod": "^3.23.8"
+    "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/diff": "^7.0.0",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.7"
-  }
+  },
+  "mcpName": "io.github.NORTHTEKDevs/lossless-context-mcp"
 }

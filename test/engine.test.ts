@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { LosslessEngine, applyToModelView } from '../src/engine.ts'
+import { LosslessEngine, applyToModelView, normalizeKey, normalizeKeyFor } from '../src/engine.ts'
 
 // A harness that mirrors the model's reconstructed view and the on-disk truth, so every
 // assertion is the real losslessness invariant: what the model can reconstruct == truth.
@@ -21,13 +21,53 @@ function harness() {
   return { engine, view, truth, read, write, compact, check }
 }
 
+describe('normalizeKeyFor (BUG: path keys must be case-sensitive on case-sensitive filesystems)', () => {
+  it('case-insensitive mode (win32) collapses case-only-distinct paths to one key', () => {
+    expect(normalizeKeyFor('/a/File.ts', true)).toBe(normalizeKeyFor('/a/file.ts', true))
+  })
+  it('case-sensitive mode (Linux/mac) keeps case-only-distinct paths as distinct keys', () => {
+    expect(normalizeKeyFor('/a/File.ts', false)).not.toBe(normalizeKeyFor('/a/file.ts', false))
+  })
+  it('always normalizes backslashes to forward slashes regardless of case mode', () => {
+    expect(normalizeKeyFor('a\\b\\c.ts', false)).toBe('a/b/c.ts')
+    expect(normalizeKeyFor('a\\b\\C.ts', true)).toBe('a/b/c.ts')
+  })
+})
+
+describe('normalizeKey (platform-bound wrapper)', () => {
+  it('only lowercases on win32 — matches normalizeKeyFor for the current platform', () => {
+    const caseInsensitive = process.platform === 'win32'
+    expect(normalizeKey('/a/File.ts')).toBe(normalizeKeyFor('/a/File.ts', caseInsensitive))
+  })
+})
+
 describe('LosslessEngine', () => {
   it('returns full on first read, unchanged marker on identical re-read', () => {
     const h = harness()
-    h.write('a.ts', 'hello\nworld\n')
+    // content must exceed the marker's wire cost for the marker to be worth emitting
+    h.write('a.ts', Array.from({ length: 40 }, (_, i) => `hello world line ${i}`).join('\n'))
     expect(h.read('a.ts').kind).toBe('full')
     expect(h.read('a.ts').kind).toBe('unchanged')
     h.check('a.ts')
+  })
+
+  it('NEVER-LOSE: tiny unchanged re-read gets full content (a marker would cost more)', () => {
+    const h = harness()
+    h.write('tiny.ts', 'hello\n') // far below the marker wire cost
+    expect(h.read('tiny.ts').kind).toBe('full')
+    expect(h.read('tiny.ts').kind).toBe('full') // marker suppressed, content is cheaper
+    h.check('tiny.ts')
+  })
+
+  it('NEVER-LOSE: a rewrite whose diff would exceed the file gets full content, not a diff', () => {
+    const h = harness()
+    h.write('r.ts', Array.from({ length: 80 }, (_, i) => `alpha ${i}`).join('\n'))
+    h.read('r.ts')
+    // total rewrite: a unified diff carries both versions and exceeds the new file
+    h.write('r.ts', Array.from({ length: 80 }, (_, i) => `omega ${i}`).join('\n'))
+    const r = h.read('r.ts')
+    expect(r.kind).toBe('full')
+    h.check('r.ts')
   })
 
   it('returns a diff after an edit and the model can reconstruct truth', () => {
@@ -44,7 +84,7 @@ describe('LosslessEngine', () => {
 
   it('reverts to full content after an epoch change (compaction) — never diffs across it', () => {
     const h = harness()
-    h.write('a.ts', 'x\ny\nz\n')
+    h.write('a.ts', Array.from({ length: 40 }, (_, i) => `x y z line ${i}`).join('\n'))
     expect(h.read('a.ts').kind).toBe('full')
     expect(h.read('a.ts').kind).toBe('unchanged')
     h.compact(1)

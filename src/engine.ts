@@ -46,13 +46,31 @@ export function hashContent(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex')
 }
 
+/** Pure helper: backslash-normalize always, lowercase only when `caseInsensitive`. */
+export function normalizeKeyFor(p: string, caseInsensitive: boolean): string {
+  const slashed = p.replace(/\\/g, '/')
+  return caseInsensitive ? slashed.toLowerCase() : slashed
+}
+
+// Ledger keys must match filesystem case semantics: Windows paths are case-insensitive, so
+// two case-only-distinct paths ARE the same file there. Linux/mac filesystems are
+// case-sensitive, so lowercasing there would collapse genuinely distinct files
+// (/a/File.ts vs /a/file.ts) into one ledger entry — wrong dedup/diff base.
 export function normalizeKey(p: string): string {
-  return p.replace(/\\/g, '/').toLowerCase()
+  return normalizeKeyFor(p, process.platform === 'win32')
 }
 
 // Memory bound for the in-epoch ledger. Evicting an entry just makes a future read of it
 // "full" again (safe). Default 64 MiB of retained content.
 const LEDGER_BUDGET = Number(process.env.LOSSLESS_LEDGER_BYTES || 64 * 1024 * 1024)
+
+// The never-lose rule: the engine must not emit MORE than the full content would cost.
+// Replaying 3,363 real transcripts (BENCHMARK.md, 2026-08) showed always-diffing lost 2.6%
+// and the unchanged-marker exceeds the average tiny re-read it replaces. So: an
+// unchanged-marker is only used when the content is bigger than the marker's wire cost,
+// and a diff is only used when the patch is smaller than the content it replaces.
+// MARKER_COST_BYTES approximates the serialized marker (path + 64-char hash + note).
+const MARKER_COST_BYTES = Number(process.env.LOSSLESS_MARKER_COST_BYTES || 256)
 
 export class LosslessEngine {
   private ledger = new Map<string, LedgerEntry>()
@@ -100,30 +118,37 @@ export class LosslessEngine {
 
     if (!forceFull && prev && prev.epoch === this.epoch) {
       if (prev.hash === hash) {
-        return {
-          kind: 'unchanged',
-          path,
-          view,
-          epoch: this.epoch,
-          hash,
-          baseHash: prev.hash,
-          bytes,
-          note: 'unchanged since you last read it this context — reuse the content you already have',
+        // Never-lose rule: for content smaller than the marker itself, full is cheaper.
+        if (bytes > MARKER_COST_BYTES) {
+          return {
+            kind: 'unchanged',
+            path,
+            view,
+            epoch: this.epoch,
+            hash,
+            baseHash: prev.hash,
+            bytes,
+            note: 'unchanged since you last read it this context — reuse the content you already have',
+          }
         }
-      }
-      const patch = createTwoFilesPatch(path, path, prev.content, content, '', '', { context: 3 })
-      const baseHash = prev.hash
-      this.setEntry(key, content, hash)
-      return {
-        kind: 'diff',
-        path,
-        view,
-        epoch: this.epoch,
-        hash,
-        baseHash,
-        bytes,
-        patch,
-        note: 'apply this unified diff to the version of this file you already have',
+      } else {
+        const patch = createTwoFilesPatch(path, path, prev.content, content, '', '', { context: 3 })
+        const baseHash = prev.hash
+        // Never-lose rule: a diff bigger than the file it patches is a loss — send the file.
+        if (Buffer.byteLength(patch, 'utf8') < bytes) {
+          this.setEntry(key, content, hash)
+          return {
+            kind: 'diff',
+            path,
+            view,
+            epoch: this.epoch,
+            hash,
+            baseHash,
+            bytes,
+            patch,
+            note: 'apply this unified diff to the version of this file you already have',
+          }
+        }
       }
     }
 
