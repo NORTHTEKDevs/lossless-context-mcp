@@ -48,7 +48,7 @@
   "homepage": "https://github.com/NORTHTEKDevs/lossless-context-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "diff": "^8.0.2",
+    "diff": "^8.0.3",
     "gpt-tokenizer": "^2.8.1",
     "zod": "^3.25.0"
   },
@@ -56,7 +56,7 @@
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.7"
   },
   "mcpName": "io.github.NORTHTEKDevs/lossless-context-mcp"
 }
