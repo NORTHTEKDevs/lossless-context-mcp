@@ -26,7 +26,17 @@ export interface SeenEntry {
 }
 
 export interface GuardState {
+  /** Legacy single-transcript cursor. Retained so older state files still load,
+   *  but never consulted for reads -- see `offsets` for why. */
   offset: number
+  /** Byte cursor PER transcript path. A session has more than one transcript:
+   *  Claude Code gives every subagent its own file while keeping the parent's
+   *  session_id, so a single scalar cursor got applied to files it did not
+   *  belong to. When the parent cursor exceeded a subagent transcript's size,
+   *  readNewLines took its truncated/rotated branch, returned no lines, and the
+   *  agent's own Read calls were never recorded -- the guard then denied edits
+   *  to files that agent had just read. Keyed by normalized path. */
+  offsets?: Record<string, number>
   seen: Record<string, SeenEntry>
   /** ms timestamp of THIS SESSION's last context-loss event (compaction, /clear).
    *  Session-scoped on purpose: the machine-global epoch file is bumped by EVERY
@@ -41,7 +51,7 @@ export const GUARDED_TOOLS = new Set(['Edit', 'MultiEdit', 'Write'])
 
 const LOSSLESS_TOOL_PREFIX = /^mcp__[^_]*lossless[^_]*__/
 // First line of each part of this server's own read render (we control this format).
-const LOSSLESS_RENDER_HEAD = /^\[lossless-context\] (.+?)(?: \((?:symbol|lines)[^)]*\))? (?:— full content|is byte-identical|changed since your last read)/
+const LOSSLESS_RENDER_HEAD = /^\[lossless-context\] (.+?)(?: \((?:symbol|lines)[^)]*\))? (?:\u2014 full content|is byte-identical|changed since your last read)/
 const BATCH_SEPARATOR = '\n\n---\n\n'
 
 /** Update seen-state from one transcript line. Returns true if the line parsed.
@@ -211,6 +221,30 @@ export function guardStatePath(sessionId: string): string {
   const dir = join(contextRoot(), 'guard')
   mkdirSync(dir, { recursive: true })
   return join(dir, sessionId.replace(/[^A-Za-z0-9._-]/g, '_') + '.json')
+}
+
+/** Cap on tracked transcripts. A long session with many subagents would
+ *  otherwise grow this map without bound. Oldest insertions are dropped first;
+ *  a dropped transcript costs one re-parse, which is self-healing. */
+const OFFSETS_CAP = Number(process.env.LOSSLESS_GUARD_OFFSETS_CAP || 256)
+
+/** Byte cursor for ONE transcript. Unknown transcripts start at 0 rather than
+ *  inheriting the legacy scalar: re-parsing a transcript is merely slow, while
+ *  starting past its end silently loses every Read in it. */
+export function offsetFor(state: GuardState, transcriptPath: string): number {
+  const v = state.offsets?.[normalizeKey(transcriptPath)]
+  return typeof v === 'number' && v >= 0 ? v : 0
+}
+
+export function setOffsetFor(state: GuardState, transcriptPath: string, offset: number): void {
+  if (!state.offsets) state.offsets = {}
+  const key = normalizeKey(transcriptPath)
+  delete state.offsets[key] // re-insert so insertion order tracks recency
+  state.offsets[key] = offset
+  const keys = Object.keys(state.offsets)
+  if (keys.length > OFFSETS_CAP) {
+    for (const k of keys.slice(0, keys.length - OFFSETS_CAP)) delete state.offsets[k]
+  }
 }
 
 export function loadGuardState(sessionId: string): GuardState {

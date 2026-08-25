@@ -42,7 +42,7 @@ try {
   const state = guard.loadGuardState(sessionId)
   if (typeof transcriptPath === 'string') {
     try {
-      const { lines, offset } = guard.readNewLines(transcriptPath, state.offset)
+      const { lines, offset } = guard.readNewLines(transcriptPath, guard.offsetFor(state, transcriptPath))
       for (const line of lines) {
         guard.updateSeenFromLine(state.seen, line)
         // Publish landed guarded-tool edits to the coordination plane.
@@ -51,7 +51,7 @@ try {
           if (landed) own.edits.push(landed)
         }
       }
-      state.offset = offset
+      guard.setOffsetFor(state, transcriptPath, offset)
       guard.saveGuardState(sessionId, state)
     } catch {} // transcript unreadable → decide on what we have (fail-open bias below)
   }
