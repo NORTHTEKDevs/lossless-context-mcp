@@ -1,6 +1,6 @@
 {
   "name": "lossless-context-mcp",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "The flight recorder for your agent context: a persistent ledger of every file version the model was shown - working-set restore after compaction, cache-ready context packs for subagent fan-outs, and git-bound signed receipts.",
   "type": "module",
   "bin": {
