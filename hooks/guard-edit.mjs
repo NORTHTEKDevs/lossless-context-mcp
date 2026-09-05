@@ -7,7 +7,7 @@
 // FAIL-OPEN by design: any internal error, unparseable payload, missing state, or the
 // LOSSLESS_GUARD=off env var → the edit proceeds untouched. Exit code is always 0; a
 // deny is expressed via stdout JSON only.
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -23,7 +23,7 @@ try {
   const toolName = payload.tool_name
   const filePath = payload?.tool_input?.file_path
   const sessionId = payload.session_id
-  const transcriptPath = payload.transcript_path
+  const parentTranscriptPath = payload.transcript_path
   if (typeof toolName !== 'string' || typeof filePath !== 'string' || typeof sessionId !== 'string') process.exit(0)
 
   const guard = await import(pathToFileURL(join(here, '..', 'dist', 'guard.js')).href)
@@ -39,7 +39,18 @@ try {
   const agentId = typeof payload.agent_id === 'string' ? payload.agent_id : undefined
   const own = presence ? presence.loadOwnPresence(sessionId, agentId) : null
 
-  const state = guard.loadGuardState(sessionId)
+  // A subagent's Reads live in its OWN transcript: Claude Code passes the parent's
+  // transcript_path plus agent_id, and the agent's context window is its own, so its
+  // seen-state is keyed per agent. If the agent transcript cannot be found the layout
+  // changed under us: fail open rather than deny every subagent edit.
+  let transcriptPath = parentTranscriptPath
+  if (agentId && typeof parentTranscriptPath === 'string') {
+    transcriptPath = guard.agentTranscriptPath(parentTranscriptPath, agentId)
+    if (!existsSync(transcriptPath)) process.exit(0)
+  }
+  const stateKey = guard.guardStateKey(sessionId, agentId)
+
+  const state = guard.loadGuardState(stateKey)
   if (typeof transcriptPath === 'string') {
     try {
       const { lines, offset } = guard.readNewLines(transcriptPath, guard.offsetFor(state, transcriptPath))
@@ -52,7 +63,7 @@ try {
         }
       }
       guard.setOffsetFor(state, transcriptPath, offset)
-      guard.saveGuardState(sessionId, state)
+      guard.saveGuardState(stateKey, state)
     } catch {} // transcript unreadable → decide on what we have (fail-open bias below)
   }
 

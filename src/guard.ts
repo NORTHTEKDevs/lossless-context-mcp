@@ -1,17 +1,17 @@
 // Blind-edit guard: the active safety net over the flight recorder.
 //
 // Two incident classes it prevents, both live in the wild:
-//   1. POST-COMPACT GUESS-EDITS — after a compaction (or resume/clear), the model no
+//   1. POST-COMPACT GUESS-EDITS - after a compaction (or resume/clear), the model no
 //      longer holds a file's contents, but the harness's own read-before-edit state may
 //      still consider it "read". The model edits from memory of a summary. This guard
-//      denies the edit with a one-line reason; the model re-reads and retries — a
+//      denies the edit with a one-line reason; the model re-reads and retries - a
 //      self-healing loop costing exactly one extra read.
-//   2. STALE-BASE EDITS — the file changed on disk since the model last saw it (another
+//   2. STALE-BASE EDITS - the file changed on disk since the model last saw it (another
 //      agent, the user, a formatter). Denied with the same re-read instruction.
 //
 // Non-negotiables: FAIL-OPEN (any internal doubt → allow; a broken guard must never
 // brick editing) and fast (incremental transcript indexing from a persisted byte
-// offset — only new lines are parsed per invocation).
+// offset - only new lines are parsed per invocation).
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -57,7 +57,7 @@ const BATCH_SEPARATOR = '\n\n---\n\n'
 /** Update seen-state from one transcript line. Returns true if the line parsed.
  *
  *  SELF-VOUCH RULE (the guard's load-bearing invariant): for guarded tools
- *  (Edit/Write/MultiEdit), only tool RESULTS may mark a file as seen — never the
+ *  (Edit/Write/MultiEdit), only tool RESULTS may mark a file as seen - never the
  *  tool_use intent block. The current call's own tool_use is already in the transcript
  *  when PreToolUse fires, so intent-based marking would let every edit approve itself
  *  (and a Write's input content would false-trip the drift check against pre-write
@@ -102,7 +102,7 @@ export function updateSeenFromLine(seen: Record<string, SeenEntry>, line: string
   const content = j?.message?.content
   if (Array.isArray(content)) {
     for (const block of content) {
-      // Intent-based marks: ONLY for this server's read tools (never guarded tools —
+      // Intent-based marks: ONLY for this server's read tools (never guarded tools - 
       // see the self-vouch rule above). Worst case here is a false ALLOW when a read
       // later errors, which is the fail-open direction.
       if (block?.type === 'tool_use' && typeof block.name === 'string' && LOSSLESS_TOOL_PREFIX.test(block.name)) {
@@ -122,7 +122,7 @@ export function updateSeenFromLine(seen: Record<string, SeenEntry>, line: string
           if (!t.startsWith('[lossless-context]')) continue
           for (const part of t.split(BATCH_SEPARATOR)) {
             // A batch/restore part may carry a collection header (and, in older wire
-            // formats, a blank line) before the file render — scan the first THREE
+            // formats, a blank line) before the file render - scan the first THREE
             // lines. (Bounded so embedded file CONTENT can't spray fake seen-marks; a
             // crafted early content line could still fake one, which errs fail-open,
             // not fail-closed.)
@@ -158,7 +158,7 @@ export function readNewLines(transcriptPath: string, offset: number): { lines: s
 export interface Decision {
   allow: boolean
   reason?: string
-  /** Deny class — lets the coordination layer attribute drift denies to a culprit. */
+  /** Deny class - lets the coordination layer attribute drift denies to a culprit. */
   kind?: 'never-seen' | 'drift'
 }
 
@@ -221,6 +221,25 @@ export function guardStatePath(sessionId: string): string {
   const dir = join(contextRoot(), 'guard')
   mkdirSync(dir, { recursive: true })
   return join(dir, sessionId.replace(/[^A-Za-z0-9._-]/g, '_') + '.json')
+}
+
+/** Identity of the logical agent whose seen-state a hook invocation belongs to.
+ *  A subagent has its own context window: the parent's Reads are not in it, and
+ *  its Reads are not in the parent's. So a subagent (hook payload carries
+ *  `agent_id`) gets its own state file, keyed under the parent session. */
+export function guardStateKey(sessionId: string, agentId?: string): string {
+  return agentId ? `${sessionId}.agent-${agentId}` : sessionId
+}
+
+/** Where Claude Code writes a subagent's transcript. The hook payload for a
+ *  subagent's tool call carries the PARENT transcript_path plus `agent_id`
+ *  (observed 2026-09-04): the agent's own Read results live in
+ *  `<transcript dir>/<session id>/subagents/agent-<agent_id>.jsonl`, keyed by the
+ *  parent transcript's basename. Scanning only the parent transcript never sees
+ *  those Reads, so every subagent edit was denied as never-seen. */
+export function agentTranscriptPath(parentTranscriptPath: string, agentId: string): string {
+  const sessionDir = parentTranscriptPath.replace(/\.jsonl$/i, '')
+  return join(sessionDir, 'subagents', `agent-${agentId}.jsonl`)
 }
 
 /** Cap on tracked transcripts. A long session with many subagents would
