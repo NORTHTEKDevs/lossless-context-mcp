@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.2 - subagent edits read their own transcript
+
+Fixes every subagent Edit being denied as never-seen (observed 2026-09-04 across three
+implementer subagents and a two-tool Read-then-Edit probe).
+
+- **Subagent transcripts are resolved from `agent_id`.** Claude Code fires PreToolUse for a
+  subagent's tool call with the PARENT session's `transcript_path` plus an `agent_id`; the
+  agent's own Read results are written to `<transcript dir>/<session id>/subagents/agent-<agent_id>.jsonl`.
+  The hook scanned only the parent transcript, so no subagent Read was ever marked seen.
+  `agentTranscriptPath()` now derives the agent file and the hook scans that instead.
+- **Seen-state is per logical agent.** `guardStateKey(sessionId, agentId)` gives each subagent
+  its own state file under the parent session: a subagent's context window holds neither the
+  parent's Reads nor its siblings', so none of them may vouch for its edits.
+- **Fail-open when the layout changes.** If the derived agent transcript does not exist the
+  guard allows the edit rather than denying every subagent edit again.
+
 ## 2.0.1 - per-transcript guard cursors
 
 Fixes a guard false-deny that only appeared with concurrent subagents.
