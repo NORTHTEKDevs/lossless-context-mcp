@@ -83,7 +83,7 @@ const MAX_BYTES = Number(process.env.LOSSLESS_MAX_BYTES || 2_000_000)
 
 const text = (s: string, isError = false) => ({ content: [{ type: 'text' as const, text: s }], isError })
 // Operational logging goes to stderr only (stdout is reserved for JSON-RPC framing).
-const logErr = (m: string) => { try { process.stderr.write(`[lossless-context] ${m}\n`) } catch {} }
+const logErr = (m: string) => { try { process.stderr.write(`[lossless-context] ${m}\n`) } catch { /* stderr closed: nowhere left to report */ } }
 
 function render(r: ReadResult, label = ''): string {
   if (r.kind === 'full') return `[lossless-context] ${r.path}${label} — full content (${r.bytes} bytes):\n${r.content}`
@@ -355,7 +355,7 @@ server.tool(
         try {
           const cur = hashContent(readFileSync(r.path, 'utf8'))
           stale = cur === r.hash ? 'current' : 'CHANGED on disk since last seen'
-        } catch {}
+        } catch { /* unreadable: keep the 'missing on disk' label set above */ }
       }
       return `  ${r.path}  ~${r.approxTokens} tok, ${r.touches} touch(es), [${[...r.sources].join('+')}], ${stale}`
     })
